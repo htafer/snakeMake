@@ -1,0 +1,156 @@
+#run snakemake
+#
+#snakemake -d `pwd` -s `pwd`/multipleGenomeAlignments.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+#look at https://www.mail-archive.com/bioinfo-general-nci@list.nih.gov/msg00018.html
+#Check parallell environment on cluster.
+
+REFGENOME="mGen"
+REFGENOMENAME=REFGENOME+".ref"
+WORKDIR="/home/lv70539/htafer/testAlignment"
+COMPUTEDIR="/scratch"
+FILES=WORKDIR+"/{id}.fna"
+IDS,=glob_wildcards(FILES)
+print("%s",IDS)
+
+
+TREE="((mGen mPri) mBvs)"
+
+#Which rules are run locally
+localrules: all,splitFile,splitFileREF,genomeSize,genomeSizeREF,clean
+
+
+rule all:
+     input: "roaster.maf" #expand("roaster.maf", id=IDS)
+
+#Multiple Alignment
+
+#ROASTING
+rule roasting:
+     input: expand(REFGENOME+".{id}.sing.maf", id=IDS)
+     output: "roaster.maf"
+     params: cluster="-cwd -V"
+     shell:"""
+           roast T={COMPUTEDIR}/ E={REFGENOME} \"{TREE}\" {input} {COMPUTEDIR}/{output}
+           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
+           """
+     
+     
+#MAFFING
+rule netMaf:
+     input: "{id}.fna.split.net","{id}.fna.split.preChain","{id}.fna.split","{id}.fna.sizes",REFGENOME+".ref"
+     output: "{REFGENOME}.{id}.sing.maf"
+     params: cluster="-cwd -V"
+     shell: """
+            netToAxt {input[0]} {input[1]} {input[4]}.split/ {input[2]}/ stdout  | axtSort stdin stdout | axtToMaf stdin {input[4]}.sizes {input[3]} {COMPUTEDIR}/{output} -tPrefix={input[4]}. -qPrefix=`echo {input[3]} | sed -r 's/.fna.+/./'`;
+            mv {COMPUTEDIR}/{output}  {WORKDIR}/{output}
+            """
+
+#NETTING
+rule chainNet:
+     input: "{id}.fna.split.preChain","{id}.fna.sizes",REFGENOME+".ref.sizes"
+     output: "{id}.fna.split.net"
+     params: cluster="-cwd -V"
+     shell:"""
+           chainNet {WORKDIR}/{input[0]} -minSpace=1 {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} stdout /dev/null | netSyntenic stdin {COMPUTEDIR}/{output}
+           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
+           """
+
+#Chaining
+rule allChain:
+     input: "{id}.fna.split.axt", "{id}.fna.sizes",REFGENOME+".ref.sizes"
+     output: "{id}.fna.split.chain","{id}.fna.split.preChain"
+     params: cluster="-cwd -V"
+     shell:"""
+           chainMergeSort {WORKDIR}/{input[0]}/* > {COMPUTEDIR}/{output[0]}
+           chainPreNet {COMPUTEDIR}/{output[0]} {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} {COMPUTEDIR}/{output[1]}
+           mv {COMPUTEDIR}/{output[0]} {WORKDIR}/{output[0]}
+           mv {COMPUTEDIR}/{output[1]} {WORKDIR}/{output[1]}
+           """
+
+rule axtChain:
+     input: "{id}.fna.split.psl",REFGENOME+".ref.split","{id}.fna.split"
+     output: "{id}.fna.split.axt"
+     params: cluster="-cwd -V"
+     shell:"""
+           prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+           mkdir -p {COMPUTEDIR}/${{prefix}}
+           parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files axtChain {{}} {WORKDIR}/{input[1]} {WORKDIR}/{input[2]}  stdout -linearGap=loose -psl ::: {WORKDIR}/{input[0]}/*
+           mv  {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
+           """
+#LASTZ
+rule lavtopsl:
+      input: "{id}.fna.split.lastz"
+      output: "{id}.fna.split.psl"
+      params: cluster="-cwd -V"
+      shell:  """
+              prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+              mkdir -p {COMPUTEDIR}/${{prefix}}
+              parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lavToPsl {{}} stdout ::: {WORKDIR}/{input}/*
+              mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
+              """
+
+rule lastz: 
+     input: REFGENOME+".ref.split","{id}.fna.split"
+     output: "{id}.fna.split.lastz"
+     params: cluster="-cwd -V"
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lastz ::: {WORKDIR}/{input[0]}/* ::: {WORKDIR}/{input[1]}/*
+     mv {COMPUTEDIR}/${{prefix}} {output}
+     
+     """
+rule splitFileREF:
+     input: REFGENOME+".ref.masked"
+     output: REFGENOME+".ref.split"
+     shell:"""
+           mkdir {output};
+           faSplit byName {input} {WORKDIR}/{output}/
+           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
+           rm {WORKDIR}/{output}/*.fa
+           """
+
+rule splitFile:
+     input: "{id}.fna.masked"
+     output: "{id}.fna.split"
+     shell:"""
+           mkdir {output};
+           faSplit byName {input} {WORKDIR}/{output}/
+           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
+           rm {WORKDIR}/{output}/*.fa
+           """
+
+#Masking
+rule repeatMaskerREF:
+     input: REFGENOME+".ref"
+     output: REFGENOME+".ref.masked"
+     threads: 16
+     params: cluster="-cwd -V"     
+     shell:"""
+            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
+           """
+
+rule repeatMasker:
+     input: "{id}.fna"
+     output: "{id}.fna.masked"
+     threads: 16
+     params: cluster="-cwd -V"     
+     shell:"""
+            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
+           """
+#commodity
+rule genomeSizeREF:
+     input: REFGENOME+".ref"
+     output: REFGENOME+".ref.sizes"
+     shell:"""
+           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
+           """
+rule genomeSize:
+     input:"{id}.fna"
+     output:"{id}.fna.sizes"
+     shell:"""
+           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
+           """
+#Cleaning
+rule clean:
+     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat"

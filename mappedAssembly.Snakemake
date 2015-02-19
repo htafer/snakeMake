@@ -1,0 +1,46 @@
+#run snakemake
+#
+#snakemake -d `pwd` -s `pwd`/transcriptomeAssembly.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub -l {params.cluster}'
+#look at https://www.mail-archive.com/bioinfo-general-nci@list.nih.gov/msg00018.html
+#Check parallell environment on cluster.
+
+WORKDIR="/home/lv70539/htafer/mappedAssemblies"
+COMPUTEDIR="/scratch"
+FILES=WORKDIR+"/{id}.fastq"
+IDS,=glob_wildcards(FILES)
+TEMPLATE="cTemplate1.fna"
+STRAIN="chaethomium"
+#Which rules are run locally
+localrules: all
+
+rule all:
+     input: expand("{id}.assembled.fasta", id=IDS)
+
+
+rule deNovoMira:
+     input: "{id}.fastq","{id}.fna"
+     output: "{id}.assembled.fasta"
+     params: cluster="-cwd -V -l mem_free=200G -l h_vmem=200G -pe mpich 64 -q highmem.q"     
+     shell: """
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     uname -a
+     mkdir -p {COMPUTEDIR}/${{prefix}}mira/
+     #Generate manifest
+     echo "project = MyFirstAssembly" > {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "job = genome,mapping,accurate" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "readgroup" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "is_reference" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "data = {WORKDIR}/{input[1]}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "strain = {STRAIN}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "readgroup = assembly" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     seqType="fastq" #We have to specify the type of file
+     echo "data = $seqType::{WORKDIR}/{input[0]}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "technology = iontor" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     echo "parameters = -GENERAL:number_of_threads=64 -SK:number_of_threads=64 -NW:cmrnl=warn -NW:cac=warn" >> {COMPUTEDIR}/${{prefix}}mira/manifest
+     cd  {COMPUTEDIR}/${{prefix}}mira/
+     mira ./manifest
+     mv {COMPUTEDIR}/${{prefix}}mira {WORKDIR}/{output}
+     """     
+
+rule clean:
+     shell: "rm  *.sh.e* *.sh.o*"
