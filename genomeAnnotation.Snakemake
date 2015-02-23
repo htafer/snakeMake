@@ -96,14 +96,15 @@ BAMFILES=WORKDIR+"/reads/{samples}.bam"
 BAMS,=glob_wildcards(BAMFILES)
 GFFS="cegma scipio".split()
 
-
+#BIOLOGY
+INTRON=2000
 
 
 #Which rules are run locally # depends on which computer the pipeline is running
-localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo
+localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA
 
 rule all:
-     input: expand("reads/{samples}.trinityDN", samples=BAMS)
+     input: expand("reads/{samples}.PASA", samples=BAMS)
 
 
 
@@ -118,21 +119,37 @@ rule all:
 #
 #
 #
+
 ##################################
 ##                               #
 ##      Augustus                 #
 ##                               #
 ##################################
 
+
 ##################################
 ##                               #
-##      PASA                     #
+##      SNAP                     #
+##                               #
+##################################
+
+
+#################################################################################
+#                                                                               #
+#                             EVIDENCE MAPPING                                  #
+#                                                                               #
+#################################################################################
+
+
+##################################
+##                               #
+##      PASA  FIRST PASS         #
 ##                               #
 ##################################
 
 rule PASA:
      input: dn="reads/{samples}.trinityDN",gg="reads/{samples}.trinityGG",cf="reads/{samples}.cufflinks/transcripts.gtf"
-     output: "reads/{samples}.trinityDN"
+     output: "reads/{samples}.PASA"
      params: cluster="-cwd -V"
      threads: THREADS
      shell:"""
@@ -140,11 +157,14 @@ rule PASA:
      mkdir -p {COMPUTEDIR}/PASA${{prefix}}
      cd {COMPUTEDIR}/PASA${{prefix}}
      #Prepare files
-     cat {WORKDIR}/{input.dn} {WORKDIR}/{input.gg} > {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta
+     cat {WORKDIR}/{input.dn}/Trinity.fasta {WORKDIR}/{input.gg}/Trinity-GG.fasta > {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta
      $PASAHOME/misc_utilities/accession_extractor.pl < {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta > {COMPUTEDIR}/PASA${{prefix}}/tdn.accs
      #Prepare alignAssembly.config
-     
-     $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./alignAssembly.config -R -g {WORKDIR}/cImmunda.fasta --ALIGNERS blat,gmap -t ./transcripts.fasta --transcribed_is_aligned_orient --TDN ./tdn.accs --cufflinks_gtf reads/{input.cf} -I 5000  --CPU 16  -C
+     DBNAME=`echo {input.dn} | sed -r 's/reads\///g' | sed -r 's/.trinityDN//g' `
+     cat $PASAHOME/pasa_conf/pasa.alignAssembly.Template.txt | sed -r "s/DBNAME/${{DBNAME}}/" > ./alignAssembly.config
+     $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./alignAssembly.config -C -R -g {WORKDIR}/cImmunda.fasta --ALIGNERS blat,gmap -t ./transcripts.fasta --transcribed_is_aligned_orient --TDN ./tdn.accs --cufflinks_gtf {WORKDIR}/{input.cf} -I {INTRON} --stringent_alignment_overlap 30.0 --CPU {threads} 
+     $PASAHOME//scripts/build_comprehensive_transcriptome.dbi -c alignAssembly.config -t transcripts.fasta --min_per_ID 95 --min_per_aligned 30
+     mv {COMPUTEDIR}/PASA${{prefix}} {WORKDIR}/{output}
      """
 
 
@@ -181,7 +201,7 @@ rule trinityAlignment:
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/trinity${{prefix}}
-     Trinity --genome_guided_bam {input} --genome_guided_max_intron 5000 --max_memory 10G --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}
+     Trinity --genome_guided_bam {input} --genome_guided_max_intron {INTRON} --max_memory 10G --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}
      mv {COMPUTEDIR}/trinity${{prefix}} {WORKDIR}/{output}
      """
 
@@ -263,7 +283,7 @@ rule segemehl:
      samtools view -bS {COMPUTEDIR}/${{prefix}}/merged.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/merged.sorted
      samtools view -h {COMPUTEDIR}/${{prefix}}/merged.sorted.bam > {COMPUTEDIR}/${{prefix}}/merged.sorted.sam
      #produce cufflinks compatible sam file
-     s2c.py -s {COMPUTEDIR}/${{prefix}}/merged.sorted.sam -d 5000 | grep -vP "^SQ\s+" >  {COMPUTEDIR}/${{prefix}}/merged.cf.sam
+     s2c.py -s {COMPUTEDIR}/${{prefix}}/merged.sorted.sam -d {INTRON} | grep -vP "^SQ\s+" >  {COMPUTEDIR}/${{prefix}}/merged.cf.sam
      samtools view -bS {COMPUTEDIR}/${{prefix}}/merged.cf.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/merged.sorted.cf
      samtools view -h {COMPUTEDIR}/${{prefix}}/merged.sorted.cf.bam > {COMPUTEDIR}/${{prefix}}/merged.sorted.cf.sam
      #mv results to final directory
@@ -293,35 +313,24 @@ rule bamToFastq:
 
 
 
-##################################
-##                               #
-##      SNAP                     #
-##                               #
-##################################
-
-
-
-
-
-
 #################################
 #                               #
 #     Splice protein mapping    #
 #                               #
 #################################
 
-#rule scipio:
-#     input: ID+".fasta"
-#     output: ID+".scipio.gff"
-#     params: cluster="-cwd -V"
-#     threads: THREADS
-#     shell:"""
-#     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#     mkdir -p {COMPUTEDIR}/${{prefix}}
-#     cat {UNIREF} | parallel -j {threads} -N20 --round-robin --pipe --recstart ">" "cat /dev/stdin > {COMPUTEDIR}/${{prefix}}/{{#}}; scipio.1.4.1.pl --min_score=0.3 --min_identity=60 --min_coverage=60 --max_mismatch=100 --multiple_results --blat_score=15 --blat_tilesize=7 --max_assemble_size=5000 --blat_params="-oneOff=1" --exhaust_align_size=5000 --exhaust_gap_size=30  --accepted_intron_penalty=1.0  --blat_output={COMPUTEDIR}/${{prefix}}/{{#}}.psl {WORKDIR}/{input} {COMPUTEDIR}/${{prefix}}/{{#}} --verbose  | yaml2gff.1.4.pl > {COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff &&  scipiogff2gff.pl --in={COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff --out={COMPUTEDIR}/${{prefix}}/{{#}}.gff && cat {COMPUTEDIR}/${{prefix}}/*.gff" > {WORKDIR}/{output}
-#     rm -rf {COMPUTEDIR}/{{$prefix}}
-#     """
-#
+rule scipio:
+     input: ID+".fasta"
+     output: ID+".scipio.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cat {UNIREF} | parallel -j {threads} -N20 --round-robin --pipe --recstart ">" "cat /dev/stdin > {COMPUTEDIR}/${{prefix}}/{{#}}; scipio.1.4.1.pl --min_score=0.3 --min_identity=60 --min_coverage=60 --max_mismatch=100 --multiple_results --blat_score=15 --blat_tilesize=7 --max_assemble_size={INTRON} --blat_params="-oneOff=1" --exhaust_align_size={INTRON} --exhaust_gap_size=30  --accepted_intron_penalty=1.0  --blat_output={COMPUTEDIR}/${{prefix}}/{{#}}.psl {WORKDIR}/{input} {COMPUTEDIR}/${{prefix}}/{{#}} --verbose  | yaml2gff.1.4.pl > {COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff &&  scipiogff2gff.pl --in={COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff --out={COMPUTEDIR}/${{prefix}}/{{#}}.gff && cat {COMPUTEDIR}/${{prefix}}/*.gff" > {WORKDIR}/{output}
+     rm -rf {COMPUTEDIR}/{{$prefix}}
+     """
+
 ##################################
 ##                               #
 ##     CEGMA CORE PROTEIN MAPPING#
@@ -329,19 +338,20 @@ rule bamToFastq:
 ##################################
 #
 #
-#rule cegma:
-#     input: ID+".fasta"
-#     output: ID+".cegma.gff"
-#     threads: THREADS
-#     params: cluster="-cwd -V"     
-#     shell:"""
-#     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#     mkdir -p {COMPUTEDIR}/${{prefix}}
-#     cd {COMPUTEDIR}/${{prefix}}
-#     cegma -g {WORKDIR}/{input} --ext -v -T {threads}  --max_intron 2000
-#     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-#     rm -rf {COMPUTEDIR}/{{$prefix}}
-#     """
+
+rule cegma:
+     input: ID+".fasta"
+     output: ID+".cegma.gff"
+     threads: THREADS
+     params: cluster="-cwd -V"     
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     cegma -g {WORKDIR}/{input} --ext -v -T {threads}  --max_intron 2000
+     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
+     rm -rf {COMPUTEDIR}/{{$prefix}}
+     """
 #
 #
 #
@@ -351,189 +361,26 @@ rule bamToFastq:
 ##                               #
 ##################################
 #
-#rule geneMarkEs:
-#     input: ID+".fasta"
-#     output: ID+".gM"
-#     threads: THREADS
-#     params: cluster="-cwd -V"     
-#     shell:"""
-#     gmes_petap.pl --fungus --ES --cores {threads} --sequence {input}
-#     """
+rule geneMarkEs:
+     input: ID+".fasta"
+     output: ID+".gM"
+     threads: THREADS
+     params: cluster="-cwd -V"     
+     shell:"""
+     gmes_petap.pl --fungus --ES --cores {threads} --sequence {input}
+     """
 
 
 rule clean:
      shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
 
-##Multiple Alignment
-#
-##ROASTING
-#rule roasting:
-#     input: expand(REFGENOME+".{id}.sing.maf", id=IDS)
-#     output: "roaster.maf"
-#     params: cluster="-cwd -V"
-#     shell:"""
-#           roast T={COMPUTEDIR}/ E={REFGENOME} \"{TREE}\" {input} {COMPUTEDIR}/{output}
-#           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
-#           """
-#     
-#     
-##MAFFING
-#rule netMaf:
-#     input: "{id}.fna.split.net","{id}.fna.split.preChain","{id}.fna.split","{id}.fna.sizes",REFGENOME+".ref"
-#     output: "{REFGENOME}.{id}.sing.maf"
-#     params: cluster="-cwd -V"
-#     shell: """
-#            netToAxt {input[0]} {input[1]} {input[4]}.split/ {input[2]}/ stdout  | axtSort stdin stdout | axtToMaf stdin {input[4]}.sizes {input[3]} {COMPUTEDIR}/{output} -tPrefix={input[4]}. -qPrefix=`echo {input[3]} | sed -r 's/.fna.+/./'`;
-#            mv {COMPUTEDIR}/{output}  {WORKDIR}/{output}
-#            """
-#
-##NETTING
-#rule chainNet:
-#     input: "{id}.fna.split.preChain","{id}.fna.sizes",REFGENOME+".ref.sizes"
-#     output: "{id}.fna.split.net"
-#     params: cluster="-cwd -V"
-#     shell:"""
-#           chainNet {WORKDIR}/{input[0]} -minSpace=1 {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} stdout /dev/null | netSyntenic stdin {COMPUTEDIR}/{output}
-#           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
-#           """
-#
-##Chaining
-#rule allChain:
-#     input: "{id}.fna.split.axt", "{id}.fna.sizes",REFGENOME+".ref.sizes"
-#     output: "{id}.fna.split.chain","{id}.fna.split.preChain"
-#     params: cluster="-cwd -V"
-#     shell:"""
-#           chainMergeSort {WORKDIR}/{input[0]}/* > {COMPUTEDIR}/{output[0]}
-#           chainPreNet {COMPUTEDIR}/{output[0]} {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} {COMPUTEDIR}/{output[1]}
-#           mv {COMPUTEDIR}/{output[0]} {WORKDIR}/{output[0]}
-#           mv {COMPUTEDIR}/{output[1]} {WORKDIR}/{output[1]}
-#           """
-#
-#rule axtChain:
-#     input: "{id}.fna.split.psl",REFGENOME+".ref.split","{id}.fna.split"
-#     output: "{id}.fna.split.axt"
-#     params: cluster="-cwd -V"
-#     shell:"""
-#           prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#           mkdir -p {COMPUTEDIR}/${{prefix}}
-#           parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files axtChain {{}} {WORKDIR}/{input[1]} {WORKDIR}/{input[2]}  stdout -linearGap=loose -psl ::: {WORKDIR}/{input[0]}/*
-#           mv  {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-#           """
-##LASTZ
-#rule lavtopsl:
-#      input: "{id}.fna.split.lastz"
-#      output: "{id}.fna.split.psl"
-#      params: cluster="-cwd -V"
-#      shell:  """
-#              prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#              mkdir -p {COMPUTEDIR}/${{prefix}}
-#              parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lavToPsl {{}} stdout ::: {WORKDIR}/{input}/*
-#              mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-#              """
-#
-#rule lastz: 
-#     input: REFGENOME+".ref.split","{id}.fna.split"
-#     
-#     mkdir -p {COMPUTEDIR}/${{prefix}}
-#     parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lastz ::: {WORKDIR}/{input[0]}/* ::: {WORKDIR}/{input[1]}/*
-#     mv {COMPUTEDIR}/${{prefix}} {output}
-#     
-#     """
-#rule splitFileREF:
-#     input: REFGENOME+".ref.masked"
-#     output: REFGENOME+".ref.split"
-#     shell:"""
-#           mkdir {output};
-#           faSplit byName {input} {WORKDIR}/{output}/
-#           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
-#           rm {WORKDIR}/{output}/*.fa
-#           """
-#
-#rule splitFile:
-#     input: "{id}.fna.masked"
-#     output: "{id}.fna.split"
-#     shell:"""
-#           mkdir {output};
-#           faSplit byName {input} {WORKDIR}/{output}/
-#           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
-#           rm {WORKDIR}/{output}/*.fa
-#           """
-#
 ##Masking
-#rule repeatMaskerREF:
-#     input: REFGENOME+".ref"
-#     output: REFGENOME+".ref.masked"
-#     threads: 16
-#     params: cluster="-cwd -V"     
-#     shell:"""
-#            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-#           """
-#
-#rule repeatMasker:
-#     input: "{id}.fna"
-#     output: "{id}.fna.masked"
-#     threads: 16
-#     params: cluster="-cwd -V"     
-#     shell:"""
-#            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-#           """
-##commodity
-#rule genomeSizeREF:
-#     input: REFGENOME+".ref"
-#     output: REFGENOME+".ref.sizes"
-#     shell:"""
-#           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
-#           """
-#rule genomeSize:
-#     input:"{id}.fna"
-#     output:"{id}.fna.sizes"
-#     shell:"""
-#           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
-#           """
+rule repeatMasker:
+     input: ID+".fasta"
+     output: ID+".fasta.masked"
+     threads: 16
+     params: cluster="-cwd -V"     
+     shell:"""
+            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
+           """
 
-
-#rule prepareScipio:
-#     input: "{id}.fasta"
-#     output: "{id}.scipio"
-#     shell:"""
-#           mkdir -p {WORKDIR}/{output}/input
-#           mkdir -p {WORKDIR}/{output}/output
-#           cd {WORKDIR}/{output}/input
-#           rmenterdb.pl < {UNIREF} | split -l {NUMBEROFENTRIESSCIPIO} -d -a {PREFIXLENGTHSCIPIO}
-#           """
-
-
-
-#rule scipio:
-#     input: "{id}.scipio"
-#     output: "{id}.scipio.yaml"
-#     params: cluster="-cwd -V -t 1-"+str(FILENUMBERSCIPIO)
-#     shell:"""
-#          i=$(expr $SGE_TASK_ID - 1)
-#          if [ ! -e {WORKDIR}/{output}/x$i.yaml ]
-#          then
-#             prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#             mkdir -p {COMPUTEDIR}/${{prefix}}
-#             cd {COMPUTEDIR}/${{prefix}}
-#              scipio.1.4.1.pl --min_score=0.3 --min_identity=60 --min_coverage=60 --max_mismatch=100 --multiple_results --blat_score=15 --blat_tilesize=6 --max_assemble_size=5000 --blat_params="-oneOff=1" --exhaust_align_size=5000 --exhaust_gap_size=30  --accepted_intron_penalty=1.0  --blat_output={COMPUTEDIR}/${{prefix}}/x${{i}}.psl {WORKDIR}/{input}/input/x${{i}}  {UNIREF} --verbose  > {WORKDIR}/{input}/output/x${{i}}.yaml
-#             
-#          fi
-#          if[ $SGE_TASK_ID -eq $SGE_TASK_FINAL]
-#          then
-#              cat {WORKDIR}/{output}/x*.yaml > {WORKDIR}/{output}
-#          fi
-#          """          
-
-
-
-#rule tophat:
-#     input: "reads/{samples}.bam.fastq",genome=ID+".fasta"
-#     output: "mapping/{samples}.tophat"
-#     params: cluster="-cwd -V"     
-#     threads: THREADS
-#     shell:"""
-#     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-#     mkdir -p {COMPUTEDIR}/${{prefix}}
-#     tophat -o {COMPUTEDIR}/${{prefix}} -p {threads} --min-segment-intron 30 --max-segment-intron 2000 --min-coverage-intron 30 --max-coverage-intron 2000 --max-intron-length 2000  --min-intron-length 30   --min-segment-intron 10 --max-segment-intron 2000  {WORKDIR}/{input.genome} {WORKDIR}/{input[0]}
-#     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-#     """
