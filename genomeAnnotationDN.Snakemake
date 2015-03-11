@@ -1,0 +1,436 @@
+#run snakemake
+#
+#snakemake -d `pwd` -s `pwd`/genomeAnnotationDN.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+
+#################################
+#                               #
+#     Import modules            #
+#                               #
+#################################
+
+import math
+import os
+
+#################################
+#                               #
+#      Own function definition  #
+#                               #
+#################################
+
+
+
+def getFileNumber(file_name, entryNumber):
+      f = open(file_name)
+      total = 0
+      for line in f:
+          if ">" in line:
+              total += 1
+      f.close()
+      return math.floor(2*total/entryNumber+1);    
+
+
+#get bam file
+def getBamFile(dir,species):
+      list=[];
+      for file in os.listdir(dir+'/'+species+'.reads/.'):
+            if fnmatch.fnmatch(file,'*.*.bam'):
+                  list.append(file);
+      return list
+
+#uniquify ids
+def f10(seq, idfun=None):
+    seen = set()
+    results=[]
+    if idfun is None:
+        for x in seq:
+            if x in seen:
+                continue
+            seen.add(x)
+            results.append(x)
+    else:
+        for x in seq:
+            x = idfun(x)
+            if x in seen:
+                continue
+            seen.add(x)
+            results.append(x)
+    return results
+
+
+
+#################################
+#                               #
+#      Variables setup          #
+#                               #
+#################################
+
+    #################################                
+    #Environment                    #
+    #################################
+
+#WORKDIR="/home/lv70539/htafer/genomeAnnotation"
+#WORKDIR="/media/vsc2/genomeAnnotation"
+#WORKDIR="/home/htafer/annotation/"
+WORKDIR="/media/work/genomeAnnotationDNTest"
+COMPUTEDIR="/tmp"
+HMM="./HMM"
+#COMPUTEDIR="/global/lv70539/htafer"
+#COMPUTEDIR="/scratch"
+
+    #################################
+    #THREADS                        #
+    #################################
+
+THREADS=16
+
+    ##################################
+    #FILES                           #
+    ##################################
+
+#GENOME
+ID="cImmundaTest";
+REF=ID+".fasta"
+ #ID="temp"
+ #REF=ID+".fasta";
+
+#UNIREF
+ #UNIREF="/media/work/genomeAnnotationDN/protein/temp.fasta"
+UNIREF="/media/work/genomeAnnotationDN/protein/unirefCladophialophora90.fasta"
+
+#CEGMAKOGS
+CEGMAKOGS="/home/htafer/bin/CEGMA_v2/data/kogs.fa"
+  #CEGMAKOGS="/media/work/genomeAnnotationDN/kogs.temp.fasta"
+
+#EVM WEIGHTS FILE
+EVMWEIGHT="/media/work/genomeAnnotationDN/gff/weightFile.cfg"
+
+
+#BAMFILES
+BAMFILES=WORKDIR+"/reads/{samples}.bam"
+BAMS,=glob_wildcards(BAMFILES)
+
+
+    ##################################
+    #BIOLOGY                         #
+    ##################################
+
+#BIOLOGY
+INTRON=2000
+
+
+#Which rules are run locally # depends on which computer the pipeline is running
+localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA, snapFirstPass, augustusFirstPass,prepareGFFFromEVM,EVMFirstPass,snapSecondPass,augustusSecondPass,EVMSecondPass,prepareGFFForEVM2
+
+rule all:
+     input: expand("reads/{samples}.PASA", samples=BAMS)
+
+
+##################################
+##                               #
+##      BCheck                   #
+##                               #
+##################################
+
+
+
+
+##################################
+##                               #
+##      Infernal                 #
+##                               #
+##################################
+
+
+
+
+
+##################################
+##                               #
+##      tRNAscan-SE              #
+##                               #
+##################################
+
+#################################################################################
+#                                                                               #
+#                            EVM SECOND PASS                                    #
+#                                                                               #
+#################################################################################
+
+
+rule EVMSecondPass:
+     input: evm="./gff/"+ID+".all.evm2.gff", scipio="./gff/"+ID+".scipio.evm.gff", genome=ID+".fasta"
+     output: "./gff/"+ID+".evm2.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     partition_EVM_inputs.pl --genome {WORKDIR}/{input.genome} --protein_alignments {WORKDIR}/{input.scipio}  --min_intron_length 10 --partition_listing partitions_list.out --gene_predictions {WORKDIR}/{input.evm} --segmentSize 1000000 --overlapSize 20000
+     write_EVM_commands.pl --genome {WORKDIR}/{input.genome} --weights {EVMWEIGHT} --gene_predictions {WORKDIR}/{input.evm} --protein_alignments {WORKDIR}/{input.scipio} --output_file evm.out --partitions partitions_list.out  > commands.list
+     cat commands.list | parallel -j {threads} \"echo {{}} | bash\"
+     recombine_EVM_partial_outputs.pl --partitions partitions_list.out --output_file_name evm.out
+     convert_EVM_outputs_to_GFF3.pl  --partitions partitions_list.out --output evm.out --genome {WORKDIR}/{input.genome}
+     cat `find . -name \*.out.gff3` > {WORKDIR}/{output}
+     """
+
+rule prepareGFFForEVM2:
+     input: snap="./gff/"+ID+".snap2.gff", augustus="./gff/"+ID+".augustus2.gff"
+     output: snap="./gff/"+ID+".snap2.evm.gff", augustus="./gff/"+ID+".augustus2.evm.gff", evmInput="./gff/"+ID+".all.evm2.gff"
+     params: cluster="-cwd -V"
+     shell:"""
+     SNAP_to_GFF3.pl {input.snap} > {output.snap}
+     augustus_to_GFF3.pl {input.augustus} > {output.augustus}
+     cat {output.snap} {output.augustus} > {output.evmInput}
+     """
+
+
+#################################################################################
+#                                                                               #
+#                            SNAP AND AUGUSTUS RETRAINING                       #
+#                                                                               #
+#################################################################################
+
+
+rule augustusSecondPass:
+     input: evm="./gff/"+ID+".evm.gff", genome=ID+".fasta", scipio="./gff/"+ID+".scipio.gff", cegma="./gff/"+ID+".cegma.gff"
+     output: gff="./gff/"+ID+".augustus2.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     #Training
+     cegma2gff.pl {WORKDIR}/{input.cegma} > augustus-training.gff
+     gff2gbSmallDNA.pl augustus-training.gff {WORKDIR}/{input.genome} 10 test.gb
+     randomSplit.pl test.gb 100
+     optimize_augustus.pl --species={ID} test.gb.train --cpus={threads} --UTR=off 
+     etraining --species={ID} test.gb.train
+     scipio2hints.pl --in={WORKDIR}/{input.scipio} --out=/dev/stdout > ./scipio.hints.gff 
+     augustus --gff3=on --species={ID} --hintsfile=./scipio.hints.gff --UTR=off {WORKDIR}/{REF}  --extrinsicCfgFile=${{AUGUSTUS_CONFIG_PATH}}/extrinsic/extrinsic.MP.cfg > {WORKDIR}/{output.gff}
+     """
+
+
+
+rule snapSecondPass:
+     input: evm="./gff/"+ID+".evm.gff", genome=ID+".fasta"
+     output: model="./HMM/"+ID+".snap2.hmm", gff="./gff/"+ID+".snap2.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     evm2zff  {WORKDIR}/{input.evm} > test.ann
+     grep '^>' test.ann | tr -d '>' > test.seqs2keep
+     fasta_sort.pl test.seqs2keep < {WORKDIR}/{input.genome} > test.dna
+     fathom test.ann test.dna -gene-stats > gene-stats.log 
+     fathom test.ann test.dna -validate > validate.log 
+     fathom test.ann test.dna -categorize 1000 > categorize.log 
+     fathom uni.ann uni.dna -export 1000 -plus > uni-plus.log 
+     forge export.ann export.dna
+     hmm-assembler.pl {WORKDIR}/{input.genome} . > {WORKDIR}/{output.model}
+     snap {WORKDIR}/{output.model} {WORKDIR}/{input.genome} | zff2gff3.pl > {WORKDIR}/{output.gff}
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+
+
+
+
+#################################################################################
+#                                                                               #
+#                            EVM FIRST PASS                                     #
+#                                                                               #
+#################################################################################
+
+
+rule EVMFirstPass:
+     input: evm="./gff/"+ID+".all.evm.gff", scipio="./gff/"+ID+".scipio.evm.gff", genome=ID+".fasta"
+     output: "./gff/"+ID+".evm.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     partition_EVM_inputs.pl --genome {WORKDIR}/{input.genome} --protein_alignments {WORKDIR}/{input.scipio}  --min_intron_length 10 --partition_listing partitions_list.out --gene_predictions {WORKDIR}/{input.evm} --segmentSize 1000000 --overlapSize 20000
+     write_EVM_commands.pl --genome {WORKDIR}/{input.genome} --weights {EVMWEIGHT} --gene_predictions {WORKDIR}/{input.evm} --protein_alignments {WORKDIR}/{input.scipio} --output_file evm.out --partitions partitions_list.out  > commands.list
+     cat commands.list | parallel -j {threads} \"echo {{}} | bash\"
+     recombine_EVM_partial_outputs.pl --partitions partitions_list.out --output_file_name evm.out
+     convert_EVM_outputs_to_GFF3.pl  --partitions partitions_list.out --output evm.out --genome {WORKDIR}/{input.genome}
+     cat `find . -name \*.out.gff3` > {WORKDIR}/{output}
+     """
+
+rule prepareGFFForEVM:
+     input: gm="./gff/"+ID+".geneMarkES.gff", snap="./gff/"+ID+".snap.gff", augustus="./gff/"+ID+".augustus.gff",scipio="./scipio/"+ID+".yaml"
+     output: gm="./gff/"+ID+".genemark.evm.gff", snap="./gff/"+ID+".snap.evm.gff", augustus="./gff/"+ID+".augustus.evm.gff", scipio="./gff/"+ID+".scipio.evm.gff", evmInput="./gff/"+ID+".all.evm.gff"
+     params: cluster="-cwd -V"
+     shell:"""
+     SNAP_to_GFF3.pl {input.snap} > {output.snap}
+     augustus_to_GFF3.pl {input.augustus} > {output.augustus}
+     genemark_gtf2gff3 {input.gm} > {output.gm}
+     yaml2gff.1.4.pl {input.scipio} | grep "ID=" | sed -r 's/;Mismat.+//g' | sed -r 's/protein_match/nucleotide_to_protein_match/' | sed -r 's/Scipio/{REF}/' | sed -r 's/Query/Target/' | sed -r 's/ID=/ID={REF}./' > {output.scipio}
+     cat {output.gm} {output.snap} {output.augustus} > {output.evmInput}
+     """
+
+#################################################################################
+#                                                                               #
+#                            FIRST ABINITIO PREDICTION                          #
+#                                                                               #
+#################################################################################
+
+
+###################################
+###                               #
+###      Augustus                 #
+###                               #
+###################################
+#
+#Use the cegma output to train the models
+#
+rule augustusFirstPass:
+     input: genome=ID+".fasta", cegma="./gff/"+ID+".cegma.gff", scipio="./gff/"+ID+".scipio.gff"
+     output: gff="./gff/"+ID+".augustus.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     #Training
+     cegma2gff.pl {WORKDIR}/{input.cegma} > augustus-training.gff
+     gff2gbSmallDNA.pl augustus-training.gff {WORKDIR}/{input.genome} 10 test.gb
+     randomSplit.pl test.gb 100
+     new_species.pl --species={ID}
+     etraining --species={ID} test.gb.train
+     optimize_augustus.pl --species={ID} test.gb.train --cpus={threads} --UTR=off 
+     etraining --species={ID} test.gb.train
+     scipio2hints.pl --in={WORKDIR}/{input.scipio} --out=/dev/stdout > ./scipio.hints.gff 
+     augustus --gff3=on --species={ID} --hintsfile=./scipio.hints.gff --UTR=off {WORKDIR}/{REF}  --extrinsicCfgFile=${{AUGUSTUS_CONFIG_PATH}}/extrinsic/extrinsic.MP.cfg > {WORKDIR}/{output.gff}
+     """
+
+
+##################################
+##                               #
+##      SNAP                     #
+##                               #
+##################################
+#
+#Use the cegma output to train the models and make first round of predictions
+#
+
+
+rule snapFirstPass:
+     input: genome=ID+".fasta", cegma="./gff/"+ID+".cegma.gff"
+     output: model="./HMM/"+ID+".snap.hmm", gff="./gff/"+ID+".snap.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     cegma2zff {WORKDIR}/{input.cegma} {WORKDIR}/{input.genome}
+     fathom genome.ann genome.dna -categorize 1000
+     fathom -export 1000 -plus uni.ann uni.dna
+     forge export.ann export.dna
+     mkdir -p {WORKDIR}/{HMM}
+     hmm-assembler.pl {WORKDIR}/{input.genome} . > {WORKDIR}/{output.model}
+     snap {WORKDIR}/{output.model} {WORKDIR}/{input.genome} | zff2gff3.pl > {WORKDIR}/{output.gff}
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+     
+#################################################################################
+#                                                                               #
+#                             EVIDENCE MAPPING                                  #
+#                                                                               #
+#################################################################################
+
+
+#################################
+#                               #
+# Scipio Splice protein mapping #
+#                               #
+#################################
+#
+# Will be used with evidence modeler
+#
+rule scipio:
+     input: ID+".fasta"
+     output: gff="./gff/"+ID+".scipio.gff", yaml="./scipio/"+ID+".yaml"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     mkdir -p {WORKDIR}
+     cat {UNIREF} | parallel -j {threads} -N20 --round-robin --pipe --recstart ">" "cat /dev/stdin > {COMPUTEDIR}/${{prefix}}/{{#}}; scipio.1.4.1.pl --min_score=0.3 --min_identity=60 --min_coverage=60 --max_mismatch=100 --multiple_results --blat_score=15 --blat_tilesize=7 --max_assemble_size={INTRON} --blat_params=\"-oneOff=1\" --exhaust_align_size={INTRON} --exhaust_gap_size=30  --accepted_intron_penalty=1.0  --blat_output={COMPUTEDIR}/${{prefix}}/{{#}}.psl {WORKDIR}/{input} {COMPUTEDIR}/${{prefix}}/{{#}} --verbose > {COMPUTEDIR}/${{prefix}}/{{#}}.yaml ; yaml2gff.1.4.pl < {COMPUTEDIR}/${{prefix}}/{{#}}.yaml > {COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff ; scipiogff2gff.pl --in={COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff --out={COMPUTEDIR}/${{prefix}}/{{#}}.gff" 
+     cat {COMPUTEDIR}/${{prefix}}/*.gff | sort -u | sort -k 1,1 -k 4,4g -k 5,5g > {WORKDIR}/{output.gff} 
+     cat {COMPUTEDIR}/${{prefix}}/*.yaml > {WORKDIR}/{output.yaml}
+     rm -rf {COMPUTEDIR}/{{$prefix}}
+     """
+
+##################################
+##                               #
+##     CEGMA CORE PROTEIN MAPPING#
+##                               #
+##################################
+#This will be used to train SNAP and AUGUSTUS
+#
+
+rule cegma:
+     input: ID+".fasta"
+     output: "./gff/"+ID+".cegma.gff"
+     threads: THREADS
+     params: cluster="-cwd -V"     
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     cegma -g {WORKDIR}/{input} --ext -v -T {threads}  --max_intron {INTRON}    -p {CEGMAKOGS}
+     mv {COMPUTEDIR}/${{prefix}}/output.cegma.gff {WORKDIR}/{output}
+     """
+
+
+#################################################################################
+#                                                                               #
+#                             AB INITIO                                         #
+#                                                                               #
+#################################################################################
+
+
+
+
+##################################
+##                               #
+##     Ab-initio                 #
+##                               #
+##################################
+#
+rule geneMarkEs:
+     input: ID+".fasta"
+     output: "./gff/"+ID+".geneMarkES.gff"
+     threads: THREADS
+     params: cluster="-cwd -V"     
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     gmes_petap.pl --fungus --ES --cores {threads} --sequence {WORKDIR}/{input} --min_contig 300
+     cat genemark.gtf > {WORKDIR}/{output}
+     """
+
+
+rule clean:
+     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
+
+##Masking
+rule repeatMasker:
+     input: ID+".fasta"
+     output: ID+".fasta.masked"
+     threads: 16
+     params: cluster="-cwd -V"     
+     shell:"""
+            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
+           """
+
