@@ -1,6 +1,6 @@
 # snakeMake
 
-This is a compilation of snakemake files to use on SGE machine of the VSC cluster.
+This is a compilation of snakemake files to use on the SGE queue of the VSC cluster.
 The snakemake are currently covering
 * Multiple Genome Alignment
 * DeNovo Genome Assembly with Newbler
