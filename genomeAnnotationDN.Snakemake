@@ -69,7 +69,7 @@ def f10(seq, idfun=None):
     #################################
 
 HOME=os.environ['HOME']
-WORKDIR=HOME+"/genomeAnnotationDN"
+WORKDIR=HOME+"/genomeAnnotationDN2"
 COMPUTEDIR="/scratch"
 HMM="./HMM"
 
@@ -88,7 +88,7 @@ GENOME=WORKDIR+"/{genome}.fasta"
 GENOMES,=glob_wildcards(GENOME);
 
 
-UNIREF=WORKDIR+"/protein/uniref90Aspergillacea.fa"
+UNIREF=WORKDIR+"/protein/eurotiomycetesUniref90.clean.fa"
 
 #CEGMAKOGS
 CEGMAKOGS=HOME+"/bin/CEGMA_v2/data/kogs.fa"
@@ -96,6 +96,7 @@ CEGMAKOGS=HOME+"/bin/CEGMA_v2/data/kogs.fa"
 #EVMWEIGHT
 EVMWEIGHT=WORKDIR+"/weightFile.cfg"
 
+CM=HOME+"/data/Rfam.cm"
 
     ##################################
     #BIOLOGY                         #
@@ -104,6 +105,14 @@ EVMWEIGHT=WORKDIR+"/weightFile.cfg"
 #BIOLOGY
 INTRON=2000
 
+    ##################################
+    #Annotation Type                 #
+    ##################################
+
+ANNOTATION="allEvm2 Rfam tRNAscan RNAmmer".split();
+
+print(ANNOTATION)
+     
 
 #Which rules are run locally # depends on which computer the pipeline is running
 #localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA, snapFirstPass, augustusFirstPass,prepareGFFForEVM,EVMFirstPass,snapSecondPass,augustusSecondPass,EVMSecondPass,prepareGFFForEVM2
@@ -111,7 +120,75 @@ INTRON=2000
 localrules: all, clean, prepareGFFForEVM, prepareGFFForEVM2
 
 rule all:
-     input: expand("./gff/{genome}.all.evm2.gff", genome=GENOMES)
+     input: expand("./gff/{genome}.{annotation}.gff", genome=GENOMES,annotation=ANNOTATION)
+
+
+
+
+##################################
+##                               #
+##      tRNAscan-SE              #
+##                               #
+##################################
+
+rule tRNAscanSE:
+     input: "{genome}.fasta"
+     output: gff="./gff/"+"{genome}.tRNAscan.gff", stat="./tRNAStat/"+"{genome}.tRNAscanSE.stat"
+     threads: THREADS
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}} 
+     cd {COMPUTEDIR}/${{prefix}}
+     mkdir -p {WORKDIR}/tRNAStat
+     tRNAscan-SE  -o tRNAscanSE.out -m {WORKDIR}/{output.stat}  {WORKDIR}/{input} 
+     tRNAscan2gff.pl < tRNAscanSE.out > {WORKDIR}/{output.gff}
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+
+##################################   
+##                               #
+##      Rfam                     #
+##                               #  
+################################## 
+
+rule Rfam:
+     input: "{genome}.fasta"
+     output: gff="./gff/{genome}.Rfam.gff"
+     threads: THREADS
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
+     shell: """
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     cmsearch --tblout bla {CM} {WORKDIR}/{input}
+     Rfam2gff.pl < bla > {WORKDIR}/{output.gff}
+     rm -rf {COMPUTEDIR}/${{prefix}}
+"""
+
+
+
+##################################
+##                               #
+##      RNAmmer                  #                                           
+##                               #
+##################################
+
+rule RNAmmer:
+     input: "{genome}.fasta"
+     output: "./gff/"+"{genome}.RNAmmer.gff"
+     threads: THREADS
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
+     shell: """
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     rnammer -S euk -m lsu,ssu,tsu -gff temp  < {WORKDIR}/{input} 
+     cat temp | grep -v "#" > {WORKDIR}/{output}
+     rm -rf {COMPUTEDIR}/{{$prefix}}
+"""
+
+
 
 
 #################################################################################
@@ -121,10 +198,11 @@ rule all:
 #################################################################################
 
 
+
 rule EVMSecondPass:
      input: evm="./gff/{genome}.evm2.gff", scipio="./gff/{genome}.scipio.evm.gff", genome="{genome}.fasta"
-     output: "./gff/{genome}.all.evm2.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     output: "./gff/{genome}.allEvm2.gff"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -139,12 +217,13 @@ rule EVMSecondPass:
      """
 
 rule prepareGFFForEVM2:
-     input: snap="./gff/{genome}.snap2.gff", augustus="./gff/{genome}.augustus2.gff"
-     output: snap="./gff/{genome}.snap2.evm.gff", augustus="./gff/{genome}.augustus2.evm.gff", evmInput="./gff/{genome}.evm2.gff"
+     input: snap="./gff/{genome}.snap2.gff", augustus="./gff/{genome}.augustus2.gff",gm="./gff/{genome}.genemark.evm.gff",glimmer="./gff/{genome}.glimmer2.gff"
+     output: snap="./gff/{genome}.snap2.evm.gff", augustus="./gff/{genome}.augustus2.evm.gff", evmInput="./gff/{genome}.evm2.gff",glimmer="./gff/{genome}.glimmer2.evm.gff"
      shell:"""
      SNAP_to_GFF3.pl {input.snap} > {output.snap}
      augustus_to_GFF3.pl {input.augustus} > {output.augustus}
-     cat {output.snap} {output.augustus} > {output.evmInput}
+     glimmerHMM_to_GFF3.pl  {input.glimmer} > {output.glimmer}
+     cat {output.snap} {output.augustus} {output.glimmer} {input.gm} > {output.evmInput}
      """
 
 
@@ -156,17 +235,16 @@ rule prepareGFFForEVM2:
 
 
 rule augustusSecondPass:
-     input: evm="./gff/{genome}.all.evm.gff", genome="{genome}.fasta", scipio="./gff/{genome}.scipio.gff", cegma="./gff/{genome}.cegma.gff"
+     input: evm="./gff/{genome}.allEvm.gff", genome="{genome}.fasta", scipio="./gff/{genome}.scipio.gff"
      output: gff="./gff/{genome}.augustus2.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/${{prefix}}
      cd {COMPUTEDIR}/${{prefix}}
      #Training
-     cegma2gff.pl {WORKDIR}/{input.cegma} > augustus-training.gff
-     gff2gbSmallDNA.pl augustus-training.gff {WORKDIR}/{input.genome} 10 test.gb
+     gff2gbSmallDNA.pl {WORKDIR}/{input.evm} {WORKDIR}/{input.genome} 10 test.gb
      randomSplit.pl test.gb 100
      optimize_augustus.pl --species={wildcards.genome} test.gb.train --cpus={threads} --UTR=off 
      etraining --species={wildcards.genome} test.gb.train
@@ -177,9 +255,9 @@ rule augustusSecondPass:
 
 
 rule snapSecondPass:
-     input: evm="./gff/{genome}.all.evm.gff", genome="{genome}.fasta"
+     input: evm="./gff/{genome}.allEvm.gff", genome="{genome}.fasta"
      output: model="./HMM/{genome}.snap2.hmm", gff="./gff/{genome}.snap2.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -199,7 +277,28 @@ rule snapSecondPass:
      """
 
 
+rule glimmerSecondPass:
+     input: genome="{genome}.fasta", model="./{genome}.glimmer2"
+     output: gff="./gff/{genome}.glimmer2.gff"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
+     threads: THREADS
+     shell:"""
+     glimmhmm.pl glimmerhmm_linux_x86_64 {WORKDIR}/{input.genome} {WORKDIR}/{input.model} -g > {WORKDIR}/{output.gff}
+     """
 
+rule glimmerSecondPassTrain:
+     input: genome="{genome}.fasta", evm="./gff/{genome}.allEvm.gff"
+     output: model="./{genome}.glimmer2"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     evm2Glimmer.pl < {WORKDIR}/{input.evm} > train.glimmer
+     trainGlimmerHMM {WORKDIR}/{input.genome} train.glimmer -d {WORKDIR}/{output.model} -f 90 -l 140
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
 
 #################################################################################
 #                                                                               #
@@ -210,8 +309,8 @@ rule snapSecondPass:
 
 rule EVMFirstPass:
      input: evm="./gff/{genome}.evm.gff", scipio="./gff/{genome}.scipio.evm.gff", genome="{genome}.fasta"
-     output: "./gff/{genome}.all.evm.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"
+     output: "./gff/{genome}.allEvm.gff"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -226,14 +325,15 @@ rule EVMFirstPass:
      """
 
 rule prepareGFFForEVM:
-     input: gm="./gff/{genome}.geneMarkES.gff", snap="./gff/{genome}.snap.gff", augustus="./gff/{genome}.augustus.gff",scipio="./scipio/{genome}.yaml"
-     output: gm="./gff/{genome}.genemark.evm.gff", snap="./gff/{genome}.snap.evm.gff", augustus="./gff/{genome}.augustus.evm.gff", scipio="./gff/{genome}.scipio.evm.gff", evmInput="./gff/{genome}.evm.gff"
+     input: gm="./gff/{genome}.genemark.gff", snap="./gff/{genome}.snap.gff", augustus="./gff/{genome}.augustus.gff",scipio="./scipio/{genome}.yaml",glimmer="./gff/{genome}.glimmer.gff"
+     output: gm="./gff/{genome}.genemark.evm.gff", snap="./gff/{genome}.snap.evm.gff", augustus="./gff/{genome}.augustus.evm.gff", scipio="./gff/{genome}.scipio.evm.gff", glimmer="./gff/{genome}.glimmer.evm.gff", evmInput="./gff/{genome}.evm.gff"
      shell:"""
      SNAP_to_GFF3.pl {input.snap} > {output.snap}
      augustus_to_GFF3.pl {input.augustus} > {output.augustus}
      genemark_gtf2gff3 {input.gm} > {output.gm}
+     glimmerHMM_to_GFF3.pl {WORKDIR}/{input.glimmer} > {output.glimmer}
      yaml2gff.1.4.pl {input.scipio} | grep "ID=" | sed -r 's/;Mismat.+//g' | sed -r 's/protein_match/nucleotide_to_protein_match/' | sed -r 's/Scipio/{wildcards.genome}/' | sed -r 's/Query/Target/' | sed -r 's/ID=/ID={wildcards.genome}./' > {output.scipio}
-     cat {output.gm} {output.snap} {output.augustus} > {output.evmInput}
+     cat {output.gm} {output.snap} {output.augustus} {output.glimmer} > {output.evmInput}
      """
 
 #################################################################################
@@ -243,6 +343,41 @@ rule prepareGFFForEVM:
 #################################################################################
 
 
+
+
+##################################
+##                               #
+##      Glimmer                  #
+##                               #
+##################################
+
+
+
+rule glimmerFirstPass:
+     input: genome="./{genome}.fasta",model="./{genome}.glimmer"
+     output: gff="./gff/{genome}.glimmer.gff"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
+     threads: THREADS
+     shell:"""
+     glimmhmm.pl glimmerhmm_linux_x86_64 {WORKDIR}/{input.genome} {WORKDIR}/{input.model} -g > {WORKDIR}/{output.gff}
+     """
+
+rule glimmerFirstPassTrain:
+     input: genome="./{genome}.fasta", cegma="./gff/{genome}.cegma.gff"
+     output: model="./{genome}.glimmer"
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
+     threads: THREADS
+     shell:"""
+     rm -rf {WORKDIR}/{output}
+     mkdir -p {WORKDIR}/{output.model}
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     cegma2Glimmer.pl < {WORKDIR}/{input.cegma} > train.glimmer
+     trainGlimmerHMM {WORKDIR}/{input.genome} train.glimmer -d {WORKDIR}/{output.model} -f 90 -l 140
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+
 ###################################
 ###                               #
 ###      Augustus                 #
@@ -251,10 +386,11 @@ rule prepareGFFForEVM:
 #
 #Use the cegma output to train the models
 #
+
 rule augustusFirstPass:
      input: genome="{genome}.fasta", cegma="./gff/{genome}.cegma.gff", scipio="./gff/{genome}.scipio.gff"
      output: gff="./gff/{genome}.augustus.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -286,7 +422,7 @@ rule augustusFirstPass:
 rule snapFirstPass:
      input: genome="{genome}.fasta", cegma="./gff/{genome}.cegma.gff"
      output: model="./HMM/{genome}.snap.hmm", gff="./gff/{genome}.snap.gff"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -301,6 +437,10 @@ rule snapFirstPass:
      snap {WORKDIR}/{output.model} {WORKDIR}/{input.genome} | zff2gff3.pl > {WORKDIR}/{output.gff}
      rm -rf {COMPUTEDIR}/${{prefix}}
      """
+
+
+
+
      
 #################################################################################
 #                                                                               #
@@ -317,10 +457,11 @@ rule snapFirstPass:
 #
 # Will be used with evidence modeler
 #
+
 rule scipio:
      input: "{genome}.fasta"
      output: gff="./gff/{genome}.scipio.gff", yaml="./scipio/{genome}.yaml"
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      threads: THREADS
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
@@ -344,7 +485,7 @@ rule cegma:
      input: "{genome}.fasta"
      output: "./gff/{genome}.cegma.gff"
      threads: THREADS
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/${{prefix}}
@@ -371,9 +512,9 @@ rule cegma:
 #
 rule geneMarkEs:
      input: "{genome}.fasta"
-     output: "./gff/{genome}.geneMarkES.gff"
+     output: "./gff/{genome}.genemark.gff"
      threads: THREADS
-     params: cluster="-cwd -V -l mem_free=16G -l h_vmem=16G"     
+     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/${{prefix}}
@@ -384,7 +525,7 @@ rule geneMarkEs:
 
 
 rule clean:
-     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
+     shell: "rm -rf tRNAStat tRNAstat HMM scipio gff"
 
 ##Masking
 rule repeatMasker:
