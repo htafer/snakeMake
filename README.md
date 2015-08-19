@@ -6,6 +6,7 @@ The snakemake are currently covering
 * DeNovo Genome Assembly with Newbler
 * Mira Genome Assembly with MIRA
 * Genome Annotation (still incomplete)
+* chimericRNA extraction from STAR read mapping
 
 We still need pipelines for
 * Functional Genome Annotation
