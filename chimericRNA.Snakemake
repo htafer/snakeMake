@@ -224,7 +224,7 @@ rule mapping:
      output: "{condition}Chimeric.out.junction"
      threads: THREADS
      shell: """
-     STAR --runThreadN 8 --genomeDir . --readFilesIn {input.read}.fastq --outFileNamePrefix  {input.read} --alignIntronMin 15 --alignIntronMax {INTRON}  --outFilterIntronMotifs RemoveNoncanonicalUnannotated --chimSegmentMin 12 --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 --outSAMtype BAM SortedByCoordinate; done
+     STAR --runThreadN 8 --genomeDir . --readFilesIn {input.read}.fastq --outFileNamePrefix  {input.read} --alignIntronMin 15 --alignIntronMax {INTRON}  --outFilterIntronMotifs RemoveNoncanonicalUnannotated --chimSegmentMin 12 --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 --outSAMtype BAM SortedByCoordinate
      """
 
 
