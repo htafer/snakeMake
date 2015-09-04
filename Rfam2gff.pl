@@ -22,8 +22,10 @@ while(my $line=<STDIN>){
     }
     if($data[7] < $data[8]){
         print "$data[0]\tRfam\tgene\t$data[7]\t$data[8]\t$data[14]\t+\t.\tID=TU.$data[0].$data[2].$foundHash->{$data[2]};Name=TU.$data[0].$data[2].$foundHash->{$data[2]}\n";
+        print "$data[0]\tRfam\texon\t$data[7]\t$data[8]\t$data[14]\t+\t.\tID=exon.$data[0].$data[2].$foundHash->{$data[2]};Parent=TU.$data[0].$data[2].$foundHash->{$data[2]}\n";
     }
     else {
         print "$data[0]\tRfam\tgene\t$data[8]\t$data[7]\t$data[14]\t-\t.\tID=TU.$data[0].$data[2].$foundHash->{$data[2]};Name=TU.$data[0].$data[2].$foundHash->{$data[2]}\n";
+        print "$data[0]\tRfam\texon\t$data[8]\t$data[7]\t$data[14]\t-\t.\tID=exon.$data[0].$data[2].$foundHash->{$data[2]};Name=TU.$data[0].$data[2].$foundHash->{$data[2]}\n";
     }
 }
