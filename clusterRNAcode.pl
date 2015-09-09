@@ -1,5 +1,5 @@
 #!/usr/bin/perl                                                                                                                                                                                                                                                                  
-
+# cat rnaCode.xx* | sort -k 1,1 -k 4,4g -k 5,5g | grep Supercontig | perl ~/bin/clusterRNAcode.pl
 use warnings;
 use strict;
 use Data::Dumper;
