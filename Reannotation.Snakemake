@@ -1,0 +1,394 @@
+#run snaxli kemake
+#
+#snakemake -d `pwd` -s `pwd`/Reannotation.Snakemake --stats snakemake.stats -j 100 --cluster 'sbatch {params.cluster}'
+
+#########################################################################
+## prepare directories and necessary files:                             #
+#  maindirectory: Reannotation                                          #
+#  files: genome.fasta, annotation.gff3,                                #
+#  subdirectory "reads" - files: samples.fastq or samples.bam           #
+## necessary programs:                                                  #
+#  introncalc2.0.pl, Star, cufflinks, Trinity, PASA                     #
+## clustermodules:                                                      #
+#  module load python/3.4.2                                             # 
+#########################################################################
+
+#################################
+#                               #
+#     Import modules            #
+#                               #
+#################################
+
+import math
+import os
+
+#################################
+#                               #
+#      Own function definition  #
+#                               #
+#################################
+
+
+
+def getFileNumber(file_name, entryNumber):
+      f = open(file_name)
+      total = 0
+      for line in f:
+          if ">" in line:
+              total += 1
+      f.close()
+      return math.floor(2*total/entryNumber+1);    
+
+
+#get bam file
+def getBamFile(dir,species):
+      list=[];
+      for file in os.listdir(dir+'/'+species+'.reads/.'):
+            if fnmatch.fnmatch(file,'*.*.bam'):
+                  list.append(file);
+      return list
+
+#uniquify ids
+def f10(seq, idfun=None):
+    seen = set()
+    results=[]
+    if idfun is None:
+        for x in seq:
+            if x in seen:
+                continue
+            seen.add(x)
+            results.append(x)
+    else:
+        for x in seq:
+            x = idfun(x)
+            if x in seen:
+                continue
+            seen.add(x)
+            results.append(x)
+    return results
+
+
+
+#################################
+#                               #
+#      Variables setup          #
+#                               #
+#################################
+
+    #################################                
+    #Environment                    #
+    #################################
+
+WORKDIR="/home/lv70539/ckustor/Reannotation"
+#WORKDIR="/media/ckustor/work/Reannotation"
+#COMPUTEDIR="/tmp"
+
+COMPUTEDIR="/global/lv70539/ckustor"
+#COMPUTEDIR="/scratch"
+
+    #################################
+    #THREADS                        #
+    #################################
+
+THREADS=16
+
+    ##################################
+    #FILES                           #
+    ##################################
+
+#GENOME
+ID="test";
+REF=ID+".fasta"
+
+#BAMFILES
+BAMFILES=WORKDIR+"/reads/{samples}.fastq"
+BAMS ,= glob_wildcards(BAMFILES);
+
+ANNOT=ID+".annotation.gff3"
+
+
+##################################
+#BIOLOGY                         #
+##################################
+
+#BIOLOGY
+INTRON=2000
+
+
+
+#Which rules are run locally # depends on which computer the pipeline is running
+#localrules: all, clean, STAR, STARIdx, bamToFastq, mergeBam, cufflinks, composeMerge, mergeAssemblies, normalization, trinityAlignment, trinityDeNovo, PASA, PASAtrainingset, PASAhints, mergeFastq, Annotcompare 
+localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, mergeFastq, STARIdx
+
+##################################
+##                               #
+##      ALL                      #
+##                               #
+##################################
+
+
+rule all:
+     input: annot=ID+".AnnotationUpdate", pasa=ID+".PASA", introns=ID+".introns.gff", transdecoder=ID+".PASAtrainingset"
+
+#################################################################################
+#                                                                               #
+#                  Annotation Update                                            #
+#                                                                               #
+#################################################################################
+
+rule Annotcompare:
+      input: genome=ID+".fasta", annot=ANNOT, dn="./reads/"+ID+".trinityDN", gg="./reads/"+ID+".trinityGG"
+      output: dir=ID+".AnnotationUpdate"
+      params: cluster="--partition=mem_0064 --qos=normal_0064"
+      threads: THREADS
+      shell: """
+      #mysql start
+      cd $HOME/bin/mysql-5.6.22/
+      $HOME/bin/mysql-5.6.22/scripts/mysql_install_db --no-defaults --datadir=$HOME/bin/mysql-5.6.22/data
+      cp $HOME/my-new.cnf $HOME/bin/mysql-5.6.22/
+      $HOME/bin/mysql-5.6.22/bin/mysqld_safe --defaults-file=./my-new.cnf --skip-grant-tables &
+      sleep 10
+      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+      mkdir -p {COMPUTEDIR}/PASA${{prefix}}
+      cd {COMPUTEDIR}/PASA${{prefix}}
+      #check compatibility
+      #$PASAHOME/misc_utilities/pasa_gff3_validator.pl {WORKDIR}/{input.annot}
+      cat {WORKDIR}/{input.dn}/Trinity.fasta {WORKDIR}/{input.gg}/Trinity-GG.fasta > {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta
+      #Prepare annotCompare.config
+      DBNAME={ID}
+      cat $PASAHOME/pasa_conf/pasa.annotationCompare.Template.txt | sed -r "s/DBNAME/${{DBNAME}}/" > ./annotCompare.config
+      $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./annotCompare.config -A -L --annots_gff3 {WORKDIR}/{input.annot} -g {WORKDIR}/{input.genome} -t ./transcripts.fasta
+      mv {COMPUTEDIR}/PASA${{prefix}} {WORKDIR}/{output.dir}
+      #mysql shutdown
+      cd $HOME/bin/mysql-5.6.22/
+      $HOME/bin/mysql-5.6.22/bin/mysqladmin --defaults-file=./my-new.cnf shutdown
+      """
+
+##################################
+##                               #
+##      PASA  FIRST PASS         #
+##                               #
+##################################
+
+rule PASA:
+     input: genome=ID+".fasta", dn="./reads/"+ID+".trinityDN", gg="./reads/"+ID+".trinityGG", cf=ID+".cufflinks.gtf"
+     output: dir=ID+".PASA"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""
+     #mysql start
+     cd $HOME/bin/mysql-5.6.22/
+     $HOME/bin/mysql-5.6.22/scripts/mysql_install_db --no-defaults --datadir=$HOME/bin/mysql-5.6.22/data
+     cp $HOME/my-new.cnf $HOME/bin/mysql-5.6.22/
+     $HOME/bin/mysql-5.6.22/bin/mysqld_safe --defaults-file=./my-new.cnf --skip-grant-tables &
+     sleep 10
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/PASA${{prefix}}
+     cd {COMPUTEDIR}/PASA${{prefix}}
+     #Prepare files
+     cat {WORKDIR}/{input.dn}/Trinity.fasta {WORKDIR}/{input.gg}/Trinity-GG.fasta > {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta
+     # NOT genome-guided, only de novo
+     $PASAHOME/misc_utilities/accession_extractor.pl < {WORKDIR}/{input.dn}/Trinity.fasta > {COMPUTEDIR}/PASA${{prefix}}/tdn.accs
+     #Prepare alignAssembly.config
+     DBNAME={ID}
+     cat $PASAHOME/pasa_conf/pasa.alignAssembly.Template.txt | sed -r "s/DBNAME/${{DBNAME}}/" > ./alignAssembly.config
+     $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./alignAssembly.config -C -r -R -g {WORKDIR}/{input.genome} --ALIGNERS blat,gmap -t ./transcripts.fasta --transcribed_is_aligned_orient --TDN ./tdn.accs --cufflinks_gtf {WORKDIR}/{input.cf} -I {INTRON} --stringent_alignment_overlap 30.0 --CPU {threads}
+     $PASAHOME/scripts/build_comprehensive_transcriptome.dbi -c ./alignAssembly.config -t ./transcripts.fasta --min_per_ID 95 --min_per_aligned 30
+     mv {COMPUTEDIR}/PASA${{prefix}} {WORKDIR}/{output.dir}
+     #shutdown mysql
+     cd $HOME/bin/mysql-5.6.22/
+     $HOME/bin/mysql-5.6.22/bin/mysqladmin --defaults-file=./my-new.cnf shutdown
+     """
+
+
+rule PASAtrainingset:
+     input: ID+".PASA"
+     output: dir=ID+".PASAtrainingset"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""
+     cd {WORKDIR}/{input}
+     $PASAHOME/scripts/pasa_asmbls_to_training_set.dbi --pasa_transcripts_fasta {WORKDIR}/{input}/{ID}.assemblies.fasta --pasa_transcripts_gff3 {WORKDIR}/{input}/{ID}.pasa_assemblies.gff3
+     mkdir {WORKDIR}/{output}
+     mv {ID}.assemblies.fasta.transdecoder.* {WORKDIR}/{output}
+     """
+
+rule PASAhints:
+     input: ID+".PASA"
+     output: ID+".introns.gff"
+     params: cluster="-cwd -V"
+     threads: THREADS
+     shell:"""
+     perl {WORKDIR}/introncalc2.0.pl < {WORKDIR}/{input}/{ID}.pasa_assemblies.gff3 > {WORKDIR}/{output}
+     """
+
+
+##################################
+##                               #
+##      TRINITY                  #
+##                               #
+##################################
+
+
+rule mergeFastq:
+     input: expand("./reads/{samples}.fastq", samples=BAMS)
+     output: "./reads/"+ID+".merged.fq"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""
+     cat {WORKDIR}/{input} > {WORKDIR}/{output} 
+     """
+
+rule normalization:
+     input: "./reads/"+ID+".merged.fq"
+     output: "./reads/"+ID+".trinityIn"
+     params: cluster="--partition=mem_0128 --qos=normal_0128"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/trinityIn${{prefix}}
+     $HOME/bin/trinityrnaseq-2.0.4/util/insilico_read_normalization.pl --seqType fq --single {input} --SS_lib_type F --JM 100G --max_cov 30 --CPU {threads} --output {COMPUTEDIR}/trinityIn${{prefix}}  
+     mv {COMPUTEDIR}/trinityIn${{prefix}} {WORKDIR}/{output}
+     """
+    
+rule trinityDeNovo:
+     input: "./reads/"+ID+".trinityIn" 
+     output: "./reads/"+ID+".trinityDN"
+     params: cluster="--partition=mem_0128 --qos=normal_0128"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/trinity${{prefix}}
+     fastQName=`ls {WORKDIR}/{input}/*.ok  | sed -r 's/.ok//'`
+     Trinity --seqType fq --single ${{fastQName}}  --SS_lib_type F --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}  --max_memory 100G
+     mv {COMPUTEDIR}/trinity${{prefix}} {WORKDIR}/{output}
+     """
+
+
+rule trinityAlignment:
+     input: "./reads/"+ID+".merged.bam"
+     output: dire="./reads/"+ID+".trinityGG"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"     
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/trinity${{prefix}}
+     Trinity --genome_guided_bam {input} --genome_guided_max_intron {INTRON} --SS_lib_type F --max_memory 60G --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}
+     mv {COMPUTEDIR}/trinity${{prefix}} {WORKDIR}/{output}
+     """
+
+##################################
+##                               #
+##      CUFFLINKS                #
+##                               #
+##################################
+
+
+rule mergeAssemblies:
+     input: "./reads/assemblies.txt"
+     output: dir="./reads", file=ID+".cufflinks.gtf"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""
+     cuffmerge -o {WORKDIR}/{output.dir} -s {REF} {input} -p {threads}
+     mv {WORKDIR}/{output.dir}/merged.gtf {output.file}
+     """
+
+
+rule composeMerge:
+     input: expand("./reads/{samples}.cufflinks/transcripts.gtf", samples=BAMS)
+     output: txt="./reads/assemblies.txt"
+     shell:"""
+     ls {WORKDIR}/{input} > {output.txt}
+     """
+
+rule cufflinks:
+     input: "./reads/{samples}.mapped.sam"
+     output: dir="./reads/{samples}.cufflinks", file="./reads/{samples}.cufflinks/transcripts.gtf"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cufflinks -o {COMPUTEDIR}/${{prefix}} -p {threads} -u -I {INTRON} --max-bundle-length 10000 --library-type ff-firststrand --min-intron-length 30 {WORKDIR}/{input}
+     mv {COMPUTEDIR}/${{prefix}}/* {WORKDIR}/{output.dir}
+     """
+
+##################################
+##                               #
+##     Spliced RNAseq mapping    #
+##                               #
+##################################
+
+
+rule mergeBam:
+     input: expand("./reads/{samples}.mapped.bam", samples=BAMS)
+     output: "./reads/"+ID+".merged.bam"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     threads: THREADS
+     shell:"""       
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     samtools merge {COMPUTEDIR}/${{prefix}}/merged.bam {input}
+     samtools sort {COMPUTEDIR}/${{prefix}}/merged.bam {COMPUTEDIR}/${{prefix}}/merged.sorted
+     #mergeBam INPUT={WORKDIR}/{input} SORT_ORDER=coordinate OUTPUT={WORKDIR}/{output}
+     mv {COMPUTEDIR}/${{prefix}}/merged.sorted.bam {WORKDIR}/{output}
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+
+
+rule STAR:
+     input: reads="./reads/{samples}.fastq", idx=ID+".idx"
+     output: bam="./reads/{samples}.mapped.bam", sam="./reads/{samples}.mapped.sam"
+     params: cluster="--partition=mem_0064 --qos=normal_0064"     
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     cd {COMPUTEDIR}/${{prefix}}
+     STAR --genomeDir {WORKDIR}/{input.idx} --readFilesIn {WORKDIR}/{input.reads} --runThreadN {threads} --alignSoftClipAtReferenceEnds No 
+     #sort sam files
+     samtools view -bS {COMPUTEDIR}/${{prefix}}/Aligned.out.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/Aligned.sorted
+     samtools view -h {COMPUTEDIR}/${{prefix}}/Aligned.sorted.bam | awk 'BEGIN {{OFS="\t"}} {{split($6,C,/[0-9]*/); split($6,L,/[SMDIN]/); if (C[2]=="S") {{$10=substr($10,L[1]+1); $11=substr($11,L[1]+1)}}; if (C[length(C)]=="S") {{L1=length($10)-L[length(L)-1]; $10=substr($10,1,L1); $11=substr($11,1,L1); }}; gsub(/[0-9]*S/,"",$6); print}}' > {COMPUTEDIR}/${{prefix}}/Aligned.sorted.sam
+     #mv results to final directory
+     mv {COMPUTEDIR}/${{prefix}}/Aligned.sorted.sam {WORKDIR}/{output.sam}
+     mv {COMPUTEDIR}/${{prefix}}/Aligned.sorted.bam {WORKDIR}/{output.bam}
+     #clean up
+     rm -rf {COMPUTEDIR}/${{prefix}}
+     """
+
+
+rule STARIdx:
+     input: genome=ID+".fasta"
+     output: dir=ID+".idx"
+     threads: THREADS
+     shell:"""
+     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
+     mkdir -p {COMPUTEDIR}/${{prefix}}
+     STAR --runMode genomeGenerate --genomeDir {COMPUTEDIR}/${{prefix}} --genomeFastaFiles {WORKDIR}/{input} --runThreadN {threads} 
+     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.dir}
+     """
+
+#rule bamToFastq:
+#     input: expand("./reads/{samples}.bam", samples=BAMS)
+#     output: expand("./reads/{samples}.fastq", samples=BAMS)
+#     params: cluster="--partition=mem_0064 --qos=normal_0064"
+#     threads: THREADS
+#     shell:"""
+#     print {input}
+#     parallel --no-notice -j {threads}  'bamToFastq -i {{}} -fq {{.}}.fastq' ::: {input}
+#     """
+
+#rule clean:
+ #    shell: "rm -rf" 
+
+##Masking
+#rule repeatMasker:
+ #    input: ID+".fasta"
+  #   output: ID+".fasta.masked"
+   #  threads: 16
+    # params: cluster="-cwd -V"     
+     #shell:"""
+      #      RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
+       #    """
+

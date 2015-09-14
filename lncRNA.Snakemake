@@ -1,0 +1,223 @@
+#run snakemake
+#
+#snakemake -d `pwd` -s `pwd`/lncRNA.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+
+###############################
+##### long non-coding RNA #####
+###############################
+
+#Create a directory "lncRNA" and copy all nessesary files (output from genomeAnnotation.Snakemake) to this directory.
+#Create a subdirectory "DIFF" and copy the mapped sam-files to this directory.
+#Create a directory "BLAST" and copy the Uniprotdatabase to this directory.
+# EXAMPLE:
+### genome: claImm.fasta, genome-Annotation: claImm.Annot.gff3    
+### pasa-assembly: claImm.pasa_assemblies.gff3, claImm.assemblies.fasta, claImm.PASAhints.gff
+### transdecoder: claImm.assemblies.fasta.transdecoder.genome.gff3
+### mapped-files: SAMPLE.mapped.sam          
+### BLAST db: UniProt90pSaccharomyceta.fasta 
+
+
+#necessary programs:
+#~/bin/rmenterdb.pl
+#perl mergealign.pl
+#IntersectBed
+#getAnnoFasta.pl
+#cpat
+#blast
+#pfam
+#featureCounts
+#diff.R
+
+#################################
+#                               #
+#      Variables setup          #
+#                               #
+#################################
+
+    #################################
+    #ENVIRONMENT                    #
+    #################################
+
+#HOME=os.environ['HOME']
+WORKDIR="/media/ckustor/work/lncRNA/snakemaketest"
+#COMPUTEDIR=os.environ['GLOBAL']
+
+    #################################
+    #THREADS                        #
+    #################################
+
+THREADS=4
+
+    ##################################
+    #FILES                           #
+    ##################################
+
+
+ID="claImm"
+GENOME=ID+".fasta"
+ANNOT=ID+".Annot.gff3"
+
+PASA=ID+".pasa_assemblies.gff3"
+PASAFASTA=ID+".assemblies.fasta"
+
+BLAST="UniProt90pSaccharomyceta.fasta"
+PFAM="/home/ckustor/bin/PfamScan/db/"
+
+SAMS=WORKDIR+"/DIFF/{SAMPLES}.sam"
+SAMPLES,=glob_wildcards(SAMS);
+SAMPLES=sorted(SAMPLES)
+
+#Which rules are run locally # depends on which computer the pipeline is running
+localrules: intersect, preparefiles, cpat, pfam, blast, countreads, diff
+
+##################################
+##                               #
+##      ALL                      #
+##                               #
+##################################
+
+rule all:
+     input:  "DIFF/diff.ok"
+     
+
+#################################################################################
+#                                                                               #
+#                  DIFFERENTIAL EXPRESSION                                      #
+#                                                                               #
+#################################################################################
+
+
+########################
+####     DIFF       ####
+########################
+
+rule diff:
+     input: "DIFF/all.counts"
+     output: "DIFF/diff.ok"
+     params:
+     threads: THREADS
+     shell:"""
+     cd DIFF
+     Rscript {WORKDIR}/limma.R -c {WORKDIR}/{input}
+     touch {WORKDIR}/{output}
+     """
+
+
+########################
+####  COUNT READS   ####
+########################
+
+rule countreads:
+     input: sam=expand(WORKDIR+"/DIFF/{samples}.sam", samples=SAMPLES), annot=ID+".lncRNA.gff3"
+     output: "DIFF/all.counts"
+     params: 
+     threads: THREADS
+     shell: """
+     cd DIFF
+     cat {WORKDIR}/{input.annot} | sed -r 's/cDNA_match/exon/' | sed -r 's#ID=#gene_id "#' | sed -r 's/;.+/";/g' > lncRNA.gtf
+     featureCounts -s 1 -T {threads} -a lncRNA.gtf -o counts {input.sam}
+     cat counts | grep -vP "^#" | sed -r 's#{WORKDIR}/DIFF/##g' | cut -f 1,7- > {WORKDIR}/{output}
+     """
+
+
+#################################################################################
+#                                                                               #
+#                DATABASE SEARCH                                                #
+#                                                                               #
+#################################################################################
+
+
+########################
+####      BLAST     ####
+########################
+
+rule blast:
+     input: cpat="CPAT/"+ID+".cpat.fasta", ids="CPAT/cpat.results"
+     output: lnc=ID+".lncRNA.gff3", blast="BLAST/blast.coding.candidates"
+     threads: THREADS
+     params:
+     shell:""" 
+     cd BLAST
+     formatdb -i {BLAST} -p T -n uniprot90S
+     blastx -query {WORKDIR}/{input.cpat} -db uniprot90S -num_threads {threads} -outfmt 7 -out blast.out
+     cat blast.out | perl -lane 'if($F[7]>$F[6] && $F[10]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}
+     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results
+     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] {WORKDIR}/{output.blast} `; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f - {WORKDIR}/{PASA} > {WORKDIR}/{output.lnc}
+     """
+
+
+########################
+####     PFAM       ####
+########################
+
+rule pfam:
+     input: "/CPAT/"+ID+".cpat.fasta"
+     output: ID+".pfam.out"
+     params:
+     threads: THREADS
+     shell: """
+     mkdir PFAM
+     cd PFAM
+     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile {output}
+     """
+
+
+#################################################################################
+#                                                                               #
+#                CPAT                                                           #
+#                                                                               #
+#################################################################################
+
+rule cpat:
+     input: gene="noOverlap.fasta", fa="assemblies.fa", nonc="nonconding.fasta", coding="codingseq.fasta" 
+     output: fasta="CPAT/"+ID+".cpat.fasta", results="CPAT/cpat.results"
+     params:
+     threads: THREADS
+     shell:"""
+     mkdir -p CPAT
+     cd CPAT
+     make_hexamer_tab.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} > hexamer.tab
+     make_logitModel.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} -x hexamer.tab -o {ID}
+     cpat.py -d {ID}.logit.RData -x hexamer.tab -g {WORKDIR}/{input.gene} -o {ID}.cpat
+     cat {ID}.cpat |  perl -lane 'if($F[1]>=1000 && $F[5]<0.01){{print;}}' | sort -k 2,2gr | sed -r 's/ASMBL/asmbl/' > {WORKDIR}/{output.results}
+     parallel -j {threads} 'grep -P "{{}}$" {WORKDIR}/{input.fa} -A 1 ' ::: `cat {WORKDIR}/{output.results}  | cut -f 1` > {WORKDIR}/{output.fasta}
+     """
+
+rule preparefiles:
+     input: fa="assemblies.fa", intron=ID+"introns.gff"
+     output: coding="codingseq.fasta", nonc="nonconding.fasta"
+     params:
+     threads: THREADS
+     shell:"""
+     getAnnoFasta.pl {ANNOT} --seqfile {GENOME}
+     cat {ID}.Annot3.cdsexons | sed -r 's/.cds[0-9]//g' | perl -lane 'BEGIN{{my $previousId="";}} if($F[0]=~/>/){{if($F[0] eq $previousId){{next;}}else{{$previousId=$F[0]; print "\n",$F[0]}}}}else{{printf $F[0]}}' > {output.coding}
+     cat {input.intron} | sed -r 's/;src=E//g' > introns.gff
+     parallel -j {threads} 'grep -P "{{}}$" assemblies.fa -A 1 ' ::: `cat introns.gff | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.nonc}
+     """
+
+#################################################################################
+#                                                                               #
+#                   INTERSECT	                                                #
+#                                                                               #
+#################################################################################
+
+
+rule intersect:
+     input: ID+".assemblies.fasta.transdecoder.genome.gff3" 
+     output: fasta="noOverlap.fasta", fa="assemblies.fa"
+     params:
+     threads: THREADS
+     shell:"""
+     perl ./mergealign.pl < {PASA} > merged.gff
+     cat  merged.gff | cut -f 1-9 > {ID}.pasa_assemblies.mergedCoordinates.gff3
+     intersectBed -v -s -a {ID}.pasa_assemblies.mergedCoordinates.gff3 -b {ANNOT} > no.gff3
+     intersectBed -v -s -a no.gff3 -b {input} > noOverlap.gff
+     perl ~/bin/rmenterdb.pl < {PASAFASTA} > {output.fa} 
+     parallel -j {threads} 'grep -P "{{}}$" assemblies.fa -A 1 ' ::: `cat noOverlap.gff | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.fasta}
+     """
+
+
+
+#rule clean:
+#     shell: " "
+
