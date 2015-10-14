@@ -138,7 +138,7 @@ rule kobas:
      shell:"""
      for i in *.gene; do cat ${{i}} | cut -f 1  | fgrep -f - {input.faa}   -A 1 | grep -v "\--" > ${{i}}.unique.fasta; done
      parallel -j {threads} "blastp -db ${{HOME}}/bin/kobas2.0-20150126/seq_pep/sce.pep.fasta -num_threads 1 -query {{}} -outfmt 6 -out {{}}.protein.blast.tab" ::: *.unique.fasta
-     parallel -j {threads} "run_kobas.py -t blastout:tab -i ${{i}} -N {threads} -s sce -E 1e-5 -R 5 -o ${{i}}.identify" ::: *.protein.blast.tab
+     parallel -j {threads} "run_kobas.py -t blastout:tab -i {{}} -N {threads} -s sce -E 1e-5 -R 5 -o {{}}.identify" ::: *.protein.blast.tab
      for i in *.identify; do cat ${{i}} | sed -r s'/ /_/g' | grep -P "GO:\d+" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.GO; done #!!!PROBLEM KOBAS DO NOT DELIVER GO Annotation for SCE anymore!!!!!!!
      for i in *.identify; do cat ${{i}} | sed -r s'/ /_/g' | grep -iP "(KEGG|Biocyc|Reactome)" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.kegg; done
      for i in *.kobas.GO; do cut -f 3,6 ${{i}} | sort -k 2,2g > ${{i}}.revigo; done
