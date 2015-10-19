@@ -116,7 +116,6 @@ rule revigo:
          cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieMF.pdf\"/" >> ${{i}}.pieMF;
      done;
 
-     for i in `ls *.pV.*{{table,pie}}*`; do j=`echo ${{i}}`; printf ${{j}}; cat ${{i}} | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.treemap.pdf/" > temp && Rscript  temp ; done
      for i in `ls *.pie?? *.table??`; do Rscript ${{i}}; done
      for i in *.table??; do cat $i | grep -Po 'c\(\"(G|t)[^\)]+\)' | sed -r 's/(c\(|\"|\))//g' > $i.summary.csv; done
      for i in `ls *kobas.kegg *kobas.GO`; do echo "#Term;Database;ID;Input number;Background number;P-Value;Corrected P-Value;Input;Hyperlink" | sed -r 's/;/,/g' |  cat - ${{i}}  | sed -r "s/\t/,/g" > $i.csv; done
