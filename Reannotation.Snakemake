@@ -177,9 +177,9 @@ rule PASA:
      threads: THREADS
      shell:"""
      #mysql start
-     cd $HOME/bin/mysql-5.6.22/
-     $HOME/bin/mysql-5.6.22/scripts/mysql_install_db --no-defaults --datadir=$HOME/bin/mysql-5.6.22/data
      cp $HOME/my-new.cnf $HOME/bin/mysql-5.6.22/
+     cd $HOME/bin/mysql-5.6.22/
+     $HOME/bin/mysql-5.6.22/scripts/mysql_install_db --defaults-file=./my-new.cnf --datadir=$HOME/bin/mysql-5.6.22/data
      $HOME/bin/mysql-5.6.22/bin/mysqld_safe --defaults-file=./my-new.cnf --skip-grant-tables &
      sleep 10
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
