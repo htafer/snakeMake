@@ -68,7 +68,7 @@ SAMPLES,=glob_wildcards(SAMS);
 SAMPLES=sorted(SAMPLES)
 
 #Which rules are run locally # depends on which computer the pipeline is running
-localrules: intersect, preparefiles, cpat, pfam, blast, countreads, diff
+localrules: intersect, preparefiles, cpat, pfam, blast, lncRNA, countreads, diff
 
 ##################################
 ##                               #
@@ -126,14 +126,29 @@ rule countreads:
 #                                                                               #
 #################################################################################
 
+########################
+####    lncRNA      ####
+########################
+
+rule lncRNA: ids="CPAT/cpat.results", blast="BLAST/blast.coding.candidates", pfam="PFAM/"+ID+".pfam.coding.candidates"
+     input: lnc=ID+"lncRNA.gff3"
+     output:
+     threads: THREADS
+     params:
+     shell:"""
+     cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | sort -u > coding.candidates
+     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results
+     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] coding.candidates`; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f {WORKDIR}/{PASA} > {WORKDIR}/{output.lnc}
+     """
+
 
 ########################
 ####      BLAST     ####
 ########################
 
 rule blast:
-     input: cpat="CPAT/"+ID+".cpat.fasta", ids="CPAT/cpat.results"
-     output: lnc=ID+".lncRNA.gff3", blast="BLAST/blast.coding.candidates"
+     input: cpat="CPAT/"+ID+".cpat.fasta"
+     output: blast="BLAST/blast.coding.candidates"
      threads: THREADS
      params:
      shell:""" 
@@ -141,8 +156,6 @@ rule blast:
      formatdb -i {BLAST} -p T -n uniprot90S
      blastx -query {WORKDIR}/{input.cpat} -db uniprot90S -num_threads {threads} -outfmt 7 -out blast.out
      cat blast.out | perl -lane 'if($F[7]>$F[6] && $F[10]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}
-     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results
-     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] {WORKDIR}/{output.blast} `; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f - {WORKDIR}/{PASA} > {WORKDIR}/{output.lnc}
      """
 
 
@@ -152,13 +165,14 @@ rule blast:
 
 rule pfam:
      input: "/CPAT/"+ID+".cpat.fasta"
-     output: ID+".pfam.out"
+     output: "PFAM/"+ID+".pfam.coding.candidates"
      params:
      threads: THREADS
      shell: """
      mkdir PFAM
      cd PFAM
-     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile {output}
+     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile pfam.out
+     cat pfam.out | grep -v '#' | perl -lane 'if($F[2]>$F[1] && $F[12]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output}
      """
 
 
