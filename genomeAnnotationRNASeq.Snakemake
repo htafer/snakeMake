@@ -67,15 +67,14 @@ def f10(seq, idfun=None):
     #################################                
     #Environment                    #
     #################################
-
-WORKDIR="/home/lv70539/ckustor/cImmundaAnnotationSTAR"
+WORKDIR="/home/lv70539/htafer/genomeAnnotationTranscript"
 #WORKDIR="/media/vsc2/genomeAnnotation"
 #WORKDIR="/home/htafer/annotation/"
 #WORKDIR="/media/work/genomeAnnotation"
-#WORKDIR="/home/ckustor/genomeAnnotationNew"
+#WORKDIR="/home/htafer/genomeAnnotationNew"
 #COMPUTEDIR="/tmp"
 
-COMPUTEDIR="/global/lv70539/ckustor"
+COMPUTEDIR="/global/lv70539/htafer"
 #COMPUTEDIR="/scratch"
 
     #################################
@@ -93,7 +92,7 @@ ID="claImm";
 REF=ID+".fasta"
 
 #BAMFILES
-BAMFILES=WORKDIR+"/reads/{samples}.fastq"
+BAMFILES="./reads/{samples}.fastq"
 BAMS ,= glob_wildcards(BAMFILES)
 print(BAMS);
 
@@ -102,7 +101,9 @@ EVMWEIGHT=WORKDIR+"/weightFile.cfg"
 
 #DN from genomeAnnotationDN
 #DN=WORKDIR+"/cImmundaBroad.gff"
-DN=WORKDIR+"/claImm.allEvm2.gff"
+DNGFF=WORKDIR+"/claImm.allEvm2.gff"
+DNGTF=WORKDIR+"/claImm.allEvm2.gtf"
+
 
 
     ##################################
@@ -205,7 +206,7 @@ rule prepareGFFforEVM:
       output: evmIn="./gff/"+ID+".evmIn.gff", augustus="./gff/"+ID+".augustus.evm.gff", 
       shell:"""
       $EVM_HOME/EvmUtils/misc/augustus_to_GFF3.pl {input.augustus} > {output.augustus}
-      cat {output.augustus} {input.pasa}/{ID}.pasa_assemblies.gff3 {DN} | grep -vP "^#" > {output.evmIn}
+      cat {output.augustus} {input.pasa}/{ID}.pasa_assemblies.gff3 {DNGFF} | grep -vP "^#" > {output.evmIn}
       """
 
 
@@ -394,14 +395,13 @@ rule cufflinks:
      mv {COMPUTEDIR}/${{prefix}}/* {WORKDIR}/{output.dir}
      """
 
-#
-#
+
 ##################################
 ##                               #
 ##     Spliced RNAseq mapping    #
 ##                               #
 ##################################
-#
+
 
 rule mergeBam:
      input: expand("./reads/{samples}.mapped.bam", samples=BAMS)
@@ -428,7 +428,7 @@ rule STAR:
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/${{prefix}}
      cd {COMPUTEDIR}/${{prefix}}
-     STAR --genomeDir {WORKDIR}/{input.idx} --readFilesIn {WORKDIR}/{input.reads} --runThreadN {threads} --alignSoftClipAtReferenceEnds No 
+     STAR --genomeDir {WORKDIR}/{input.idx} --readFilesIn {WORKDIR}/{input.reads} --runThreadN {threads}  --twopassMode Basic --outReadsUnmapped None --chimSegmentMin 12  --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 --alignIntronMax {INTRON} --chimSegmentReadGapMax parameter 3  --alignSJstitchMismatchNmax 5 -1 5 5
      #sort sam files
      samtools view -bS {COMPUTEDIR}/${{prefix}}/Aligned.out.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/Aligned.sorted
      samtools view -h {COMPUTEDIR}/${{prefix}}/Aligned.sorted.bam | awk 'BEGIN {{OFS="\t"}} {{split($6,C,/[0-9]*/); split($6,L,/[SMDIN]/); if (C[2]=="S") {{$10=substr($10,L[1]+1); $11=substr($11,L[1]+1)}}; if (C[length(C)]=="S") {{L1=length($10)-L[length(L)-1]; $10=substr($10,1,L1); $11=substr($11,1,L1); }}; gsub(/[0-9]*S/,"",$6); print}}' > {COMPUTEDIR}/${{prefix}}/Aligned.sorted.sam
@@ -447,7 +447,7 @@ rule STARIdx:
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/${{prefix}}
-     STAR --runMode genomeGenerate --genomeDir {COMPUTEDIR}/${{prefix}} --genomeFastaFiles {WORKDIR}/{input} --runThreadN {threads} 
+     STAR --sjdbGTFfile {DNGTF} -sjdbOverhang 100 --runMode genomeGenerate --genomeDir {COMPUTEDIR}/${{prefix}} --genomeFastaFiles {WORKDIR}/{input} --runThreadN {threads} 
      mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.dir}
      """
 
