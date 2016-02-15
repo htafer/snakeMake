@@ -104,7 +104,8 @@ EVMWEIGHT=WORKDIR+"/weightFile.cfg"
 DNGFF=WORKDIR+"/claImm.allEvm2.gff"
 DNGTF=WORKDIR+"/claImm.allEvm2.gtf"
 
-
+PFAM="/global/lv70539/htafer/share/"
+BLAST="/global/lv70539/htafer/share/eurotiomycetesUniref90.clean.fasta"
 
     ##################################
     #BIOLOGY                         #
@@ -119,7 +120,7 @@ INTRON=2000
 #localrules: all, clean, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, prepareGFFforEVM, mergeFastq
 
 #Localrules STAR
-localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, prepareGFFforEVM, mergeFastq, STARIdx
+localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, prepareGFFforEVM, mergeFastq, STARIdx,otherTranscript, lncRNA
 
 #cluster: STAR, mergeBam,  cufflinks, trinityDeNovo, trinityAlignment, normalization, PASA, augustus, EVM, postPASA
 
@@ -133,7 +134,153 @@ localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhint
 
 
 rule all:
-     input: "./gff/"+ID+".Annotation"
+     input: ID+".noKnownFunc.gff3"
+
+
+##################################################################################                              
+#                                                                                #
+#                  Get The Rest                                                  #
+#                                                                                #
+##################################################################################                              
+
+rule otherTranscript:
+     input: lnc=ID+".lncRNA.gff3", coding="./gff/"+ID+".allProtein.gff3", pasaAssemblies="./reads/"+ID+".PASA/"+ID+".pasa_assemblies.gff3"
+     output: ID+".noKnownFunc.gff3"
+     shell:"""    
+     mergealign.pl < {input.pasaAssemblies} | cut -f 1-9 >  merged.gff 
+     bedtools intersect -s -v -a merged.gff -b {input.lnc} | bedtools intersect -s -v -a - -b {input.coding} | cut -f 9  | cut -f 1 -d " " | sort -u | fgrep -wf - reads/claImm.PASA/claImm.pasa_assemblies.gff3 > {output}
+     """
+
+
+#################################################################################                              
+#                                                                               #
+#                  Get lncRNAs                                                  #
+#                                                                               #
+#################################################################################                              
+########################            
+####    lncRNA      ####            
+########################            
+
+rule lncRNA:
+     input: ids="./CPAT/cpat.results", blast="BLAST/blast.coding.candidates", pfam="PFAM/"+ID+".pfam.coding.candidates", pasaAssemblies="./reads/"+ID+".PASA/"+ID+".pasa_assemblies.gff3"
+     output: lnc=ID+".lncRNA.gff3"
+     threads: THREADS
+     shell:"""                      
+     cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | sort -u > coding.candidates                               
+     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results                      
+     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] coding.candidates`; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f - {WORKDIR}/{input.pasaAssemblies} > {WORKDIR}/{output.lnc}                     
+     """
+########################            
+####      BLAST     ####            
+########################            
+
+rule blast:
+     input: cpat="./CPAT/"+ID+".cpat.fasta"
+     output: blast="BLAST/blast.coding.candidates"
+     threads: THREADS
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     shell:"""
+     mkdir -p BLAST
+     cd BLAST                       
+     #formatdb -i {BLAST} -p T -n uniprot90S                                 
+     blastx -query {WORKDIR}/{input.cpat} -db {BLAST} -num_threads {threads} -outfmt 7 -out blast.out            
+     cat blast.out | perl -lane 'if($F[7]>$F[6] && $F[10]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}      
+     """
+
+########################            
+####     PFAM       ####            
+########################            
+
+rule pfam:
+     input: "./CPAT/"+ID+".cpat.fasta"
+     output: "PFAM/"+ID+".pfam.coding.candidates"
+     threads: THREADS
+     params: cluster="--partition=mem_0064 --qos=normal_0064"
+     shell: """                     
+     mkdir -p PFAM                  
+     cd PFAM                        
+     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile pfam.out                             
+     cat pfam.out | grep -v '#' | perl -lane 'if($F[2]>$F[1] && $F[12]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output}                                     
+     """
+
+
+
+################                    
+#### CPAT   ####                    
+################                    
+
+rule cpat:
+     input: gene="noOverlap.fasta", fa="assemblies.fa", nonc="nonconding.fasta", coding="codingseq.fasta"
+     output: fasta="./CPAT/"+ID+".cpat.fasta", results="./CPAT/cpat.results"
+     threads: THREADS
+     shell:"""                      
+     mkdir -p CPAT
+     cd CPAT
+     make_hexamer_tab.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} > hexamer.tab
+     make_logitModel.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} -x hexamer.tab -o {ID}
+     module load python/2.7
+     cpat.py -d {ID}.logit.RData -x hexamer.tab -g {WORKDIR}/{input.gene} -o {ID}.cpat
+     cat {ID}.cpat |  perl -lane 'if($F[5]<0.01){{print;}}' | sort -k 2,2gr | sed -r 's/ASMBL/asmbl/' > {WORKDIR}/{output.results}
+     parallel -j {threads} 'grep -P "{{}}$" {WORKDIR}/{input.fa} -A 1 ' ::: `cat {WORKDIR}/{output.results}  | cut -f 1 | grep asmbl` > {WORKDIR}/{output.fasta}
+     """
+
+
+rule prepareFiles:
+     input: fa="assemblies.fa", intron="./gff/"+ID+".PASAhints.gff", updateAnn="./gff/"+ID+".allProtein.gff3"
+     output: coding="codingseq.fasta", nonc="nonconding.fasta"
+     params:
+     threads: THREADS
+     shell:"""                      
+     #We have to prepare a training data set in order to train CPAT         
+     #Start with the protein dataset
+     getAnnoFasta.pl {input.updateAnn} --seqfile {REF}                      
+     cat "./gff/{ID}.allProtein3.cdsexons | sed -r 's/.cds[0-9]//g' | perl -lane 'BEGIN{{my $previousId="";}} if($F[0]=~/>/){{if($F[0] eq $previousId){{next;}}else{{$previousId=$F[0]; print "\n",$F[0]}}}}else{{printf $F[0]}}' > {output.coding}
+     #Now generate the non coding dataset with the intron                   
+     cat {input.intron} | sed -r 's/;src=E//g' > temp.introns               
+     parallel -j {threads} 'grep -P "{{}}$" {input.fa} -A 1 ' ::: `cat temp.introns | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.nonc}
+     """
+
+################
+#   INTERSECT  #
+################
+rule intersect:
+     input: transAnn="./reads/"+ID+".PASAtrainingset/"+ID+".assemblies.fasta.transdecoder.genome.gff3", pasaAssemblies="./reads/"+ID+".PASA/"+ID+".pasa_assemblies.gff3", pasaSequence="./reads/"+ID+".PASA/"+ID+".assemblies.fasta", updateAnn="./gff/"+ID+".allProtein.gff3"
+     output: fasta="noOverlap.fasta", fa="assemblies.fa"
+     params:
+     threads: THREADS
+     shell:"""                      
+     #put the gene together         
+     mergealign.pl < {input.pasaAssemblies} | cut -f 1-9 >  merged.gff      
+     #check which gene overlap neither with the updated protein annotation nor with the pasa protein annotation     
+     intersectBed -v -s -a merged.gff -b {input.updateAnn} > no.gff3        
+     intersectBed -v -s -a no.gff3 -b {input.transAnn} > noOverlap.gff      
+     perl ~/bin/rmenterdb.pl < {input.pasaSequence} > {output.fa}           
+     #Fetch the sequences           
+     parallel -j {threads} 'grep -P "{{}}$" {output.fa} -A 1 ' ::: `cat noOverlap.gff | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.fasta} 
+"""
+
+
+
+
+#################################################################################
+#                                                                               #
+#                  Get New Proteins                                             #
+#                                                                               #
+#################################################################################                  
+
+rule newProtein:
+       input: transAnn="./reads/"+ID+".PASAtrainingset/"+ID+".assemblies.fasta.transdecoder.genome.gff3", updateAnn="./gff/"+ID+".Annotation/"+ID+".gff3"
+       output: newProtein="./gff/"+ID+".newProtein.gff3", allProtein="./gff/"+ID+".allProtein.gff3"
+       shell:"""       
+       grep -P "\tCDS\t" {input.transAnn} | mergealign.pl > {ID}.transdecoder.CDS.gff3                 
+       grep -P "\tCDS\t" {input.updateAnn} | mergealign.pl > {ID}.update.CDS.gff3                      
+       bedtools intersect -v -a {ID}.transdecoder.CDS.gff3 -b {ID}.update.CDS.gff3 | cut -f 9 | sed -r 's/.+Parent=//' | fgrep -f - {input.transAnn} | grep -P "\tCDS\t" > {ID}.newProtein.CDS.gff3                            
+       cut -f 9 {ID}.newProtein.CDS.gff3 | sed -r 's/.+Parent=//' | fgrep -f - {input.transAnn} | perl -lane 'if($F[2]=~/mRNA/){{$anno=$F[8]; $anno=~s/ID=.+Parent=/ID=/; $anno=~/=(asmbl[^g]+g[^;]+)/; my  $id=$1; $id=~s/g\./m./; $anno=~s/ORF/$id/; print "$F[0]\t$F[1]\tgene\t$F[3]\t$F[4]\t$F[5]\t$F[6]\t$F[7]\t$anno"; $anno=$F[8]; $anno=~s/ORF/$id/; print join("\t",@F[0..7]),"\t$ann\
+o";}}else{{print;}}' > {output.newProtein}                     
+       cat {input.updateAnn} {output.newProtein}  > {output.allProtein}                                
+       """
+
+
 
 #################################################################################
 #                                                                               #
@@ -143,7 +290,7 @@ rule all:
 
 rule postPASA:
       input: genome=ID+".fasta", pred="./gff/"+ID+".all.evm.gff3", dn="./reads/"+ID+".trinityDN", gg="./reads/"+ID+".trinityGG"
-      output: dir="./gff/"+ID+".Annotation"
+      output: dir="./gff/"+ID+".Annotation", updateGFF3=ID+".Annotation/"+ID+".gff3"
       params: cluster="--partition=mem_0064 --qos=normal_0064"
       threads: THREADS
       shell: """
@@ -164,6 +311,8 @@ rule postPASA:
       cat $PASAHOME/pasa_conf/pasa.annotationCompare.Template.txt | sed -r "s/DBNAME/${{DBNAME}}/" > ./annotCompare.config
       $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./annotCompare.config -A -L --annots_gff3 {WORKDIR}/{input.pred} -g {WORKDIR}/{input.genome} -t ./transcripts.fasta
       mv {COMPUTEDIR}/PASA${{prefix}} {WORKDIR}/{output.dir}
+      cd {WORKDIR}/{output.dir} 
+      mv *gene_structures_post_PASA_updates.*.gff3 {output.upateGFF3}
       #mysql shutdown
       cd $HOME/bin/mysql-5.6.22/
       $HOME/bin/mysql-5.6.22/bin/mysqladmin --defaults-file=./my-new.cnf shutdown
@@ -327,7 +476,7 @@ rule normalization:
      shell:"""
      prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
      mkdir -p {COMPUTEDIR}/trinityIn${{prefix}}
-     $HOME/bin/trinityrnaseq-2.0.4/util/insilico_read_normalization.pl --seqType fq --single {input} --SS_lib_type F --JM 100G --max_cov 30 --CPU {threads} --output {COMPUTEDIR}/trinityIn${{prefix}}  
+     $HOME/bin/trinityrnaseq-2.0.6/util/insilico_read_normalization.pl --seqType fq --single {input} --SS_lib_type F --JM 110G --max_cov 30 --CPU {threads} --output {COMPUTEDIR}/trinityIn${{prefix}}  
      mv {COMPUTEDIR}/trinityIn${{prefix}} {WORKDIR}/{output}
      """
     
