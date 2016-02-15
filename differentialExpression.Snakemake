@@ -22,7 +22,7 @@ import os
     #################################
 
 HOME=os.environ['HOME']
-WORKDIR="/media/work/genomes/exoDer/RNAseq/reads"
+WORKDIR="/media/work/genomes/exoDer/RNAseq/diffExp/Proteins"
 COMPUTEDIR="/tmp"
 NDIFF=500
 
@@ -39,10 +39,10 @@ THREADS=8
 #GENOME
 SPEC="exoDer"
 GENOME=WORKDIR+"/"+SPEC+".fa"
-GTF  =WORKDIR+"/"+SPEC+"Protein.gtf"
+GTF  =WORKDIR+"/"+SPEC+".Protein.gtf"
 FUNCANNO=WORKDIR+"/"+SPEC+".merged.tsv"
 fastq =WORKDIR+"/{condition}.fastq"
-DICT = "/home/htafer/share/database/InterProscanDictionary.dat"
+DICT = "/media/work/share/database/InterProscanDictionary.dat"
 FASTQ,=glob_wildcards(fastq);
 FASTQ=sorted(FASTQ)
 
@@ -61,7 +61,7 @@ INTRON=2000
 ################################################################################
 
 
-localrules: all, prepFunc
+localrules: all, prepFunc,getDiffFusion
 
 rule all:
       input: "revigo.ok"
@@ -83,9 +83,8 @@ rule revigo:
      output: "revigo.ok"
      threads: THREADS
      shell:"""
-
-
-     for i in *.revigo; do
+     
+     for i in *.revigo; do 
      j=`echo ${{i}}`;
      echo ${{j}};
      revigo.pl -f ${{i}} -t BP | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableBP.pdf/" > ${{i}}.tableBP;
@@ -93,36 +92,37 @@ rule revigo:
      cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/${{i}}.pieBP.pdf/" >> ${{i}}.pieBP;
      revigo.pl -f ${{i}} -t CC | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableCC.pdf/" > ${{i}}.tableCC;
      csplit ${{i}}.tableCC /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieCC;
-     cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/${{i}}.pieCC.pdf/" >> ${{i}}.pieCC;
+     cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/${{i}}.pieCC.pdf/" >> ${{i}}.pieCC;    
      revigo.pl -f ${{i}} -t MF | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableMF.pdf/" > ${{i}}.tableMF;
      csplit ${{i}}.tableMF /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieMF;
      cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/${{i}}.pieMF.pdf/" >> ${{i}}.pieMF;
-     done;
+     done;     
+     
 
 
-
-     parallel -j {threads} "cat {{}} | cut -f 2,3 {{}} -d ' ' | sed -r 's/\\\"//g' > {{}}.pV" ::: *.gene.GO
-     for i in *.pV; do
-         j=`echo ${{i}}`;
-         echo ${{j}};
-         revigo.pl -f ${{i}} -t BP | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableBP.pdf/" > ${{i}}.tableBP
+     parallel -j {threads} "cat {{}} | cut -f 2,3 {{}} -d ';' | sed -r 's/\\\"//g' | sed -r 's/;/ /' > {{}}.pV" ::: *.gene.GO.csv
+     for i in *.pV; do 
+     	 j=`echo ${{i}}`;
+     	 echo ${{j}};
+     	 revigo.pl -f ${{i}} -t BP | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableBP.pdf/" > ${{i}}.tableBP
          csplit ${{i}}.tableBP /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieBP;
          cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieBP.pdf\"/" >> ${{i}}.pieBP;
          revigo.pl -f ${{i}} -t CC | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableCC.pdf/" > ${{i}}.tableCC;
-         csplit ${{i}}.tableCC /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieCC;
-         cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieCC.pdf\"/" >> ${{i}}.pieCC;
-         revigo.pl -f ${{i}} -t MF | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableMF.pdf/" > ${{i}}.tableMF;
-         csplit ${{i}}.tableMF /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieMF;
-         cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieMF.pdf\"/" >> ${{i}}.pieMF;
+     	 csplit ${{i}}.tableCC /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieCC;
+         cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieCC.pdf\"/" >> ${{i}}.pieCC;    
+     	 revigo.pl -f ${{i}} -t MF | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableMF.pdf/" > ${{i}}.tableMF;
+     	 csplit ${{i}}.tableMF /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieMF;
+     	 cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieMF.pdf\"/" >> ${{i}}.pieMF;
      done;
 
+     
      for i in `ls *.pie?? *.table??`; do Rscript ${{i}}; done
-     for i in *.table??; do cat $i | grep -Po 'c\(\"(G|t)[^\)]+\)' | sed -r 's/(c\(|\"|\))//g' > $i.summary.csv; done
+     for i in *.table??; do cat -A $i | grep -Po "\(\"(G|t)[^^]+" | sed -r 's/(\(|\)|\"|,$)//g' | sed -r 's/, / /g' > $i.summary.csv; done
      for i in `ls *kobas.kegg *kobas.GO`; do echo "#Term;Database;ID;Input number;Background number;P-Value;Corrected P-Value;Input;Hyperlink" | sed -r 's/;/,/g' |  cat - ${{i}}  | sed -r "s/\t/,/g" > $i.csv; done
      for i in *.csv; do soffice --headless --convert-to xls ${{i}} &  done
      touch {output}
      """
-
+     
 
 
 #################################################################################
@@ -137,9 +137,9 @@ rule kobas:
      shell:"""
      for i in *.gene; do cat ${{i}} | cut -f 1  | fgrep -f - {input.faa}   -A 1 | grep -v "\--" > ${{i}}.unique.fasta; done
      parallel -j {threads} "blastp -db ${{HOME}}/bin/kobas2.0-20150126/seq_pep/sce.pep.fasta -num_threads 1 -query {{}} -outfmt 6 -out {{}}.protein.blast.tab" ::: *.unique.fasta
-     parallel -j {threads} "run_kobas.py -t blastout:tab -i {{}} -N {threads} -s sce -E 1e-5 -R 5 -o {{}}.identify" ::: *.protein.blast.tab
-     for i in *.identify; do cat ${{i}} | sed -r s'/ /_/g' | grep -P "GO:\d+" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.GO; done #!!!PROBLEM KOBAS DO NOT DELIVER GO Annotation for SCE anymore!!!!!!!
-     for i in *.identify; do cat ${{i}} | sed -r s'/ /_/g' | grep -iP "(KEGG|Biocyc|Reactome)" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.kegg; done
+     parallel -j {threads} "run_kobas.py -t blastout:tab -i {{}} -N {threads} -s sce -E 1e-8 -R 5 -o {{}}.identify" ::: *.protein.blast.tab
+     for i in *.identify; do cat ${{i}} | sed -r s'/, /_/g' | grep -P "GO:\d+" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.GO; done #!!!PROBLEM KOBAS DO NOT DELIVER GO Annotation for SCE anymore!!!!!!!
+     for i in *.identify; do cat ${{i}} | sed -r s'/, /_/g' | grep -iP "(KEGG|Biocyc|Reactome)" | perl -lane 'if($F[6]<0.1 && $F[3] > 1){{print;}}' > ${{i}}.kobas.kegg; done
      for i in *.kobas.GO; do cut -f 3,6 ${{i}} | sort -k 2,2g > ${{i}}.revigo; done
      touch {output}
      """
@@ -156,7 +156,7 @@ rule GoStat:
      output: "goStat.ok"
      threads: THREADS
      shell:"""
-     parallel -j {threads} 'j=`echo {{1}} | sed -r "s/{SPEC}.ann.//"`; enrichmentStat.R -b {{1}} -d {{2}} -t ${{j}} -D {DICT};' ::: {SPEC}.ann.* ::: *.gene
+     parallel -j {threads} 'j=`echo {{1}} | sed -r "s/{SPEC}.ann.//"`; enrichmentStat.R -b {{1}} -d {{2}} -t ${{j}} -D {DICT};' ::: {SPEC}.ann.* ::: Skin-SkinControl*.gene
      touch {output}
      """
 
@@ -171,8 +171,8 @@ rule getDiffFusion:
      input: "all.htC.clean"
      output: "diff.ok"
      shell:"""
-     Rscript ~/bin/diff.R -n {NDIFF} -c {input}
-     for i in *.{{UP,DOWN}}; do tail -n +2 ${{i}} | cut -f 1 -d " " | sed -r 's/\"//g' > ${{i}}.gene; done
+     Rscript ~/bin/diff.R -n {NDIFF} -c {input} -l 1 -p 0.01
+     for i in Skin-SkinControl.{{UP,DOWN}}; do tail -n +2 ${{i}} | cut -f 1 -d " " | sed -r 's/\"//g' > ${{i}}.gene; done
      touch {output}
      """
 
@@ -192,6 +192,10 @@ rule similarityAnalysis:
      Rscript ~/bin/similarityAnalysis.R -c {input}
      touch {output}
      """
+
+
+
+
 #################################################################################
 ###                                                                             #
 ###      Prepare functional annotation                                          #
@@ -203,11 +207,11 @@ rule prepFunc:
       threads: THREADS
       shell:"""
       for i in `cut -f 4 {input.func} | sed -r 's/evm\.model\.//' | sort -u`; do printf \"ANN\tIDs\n\" > {SPEC}.ann.${{i}}; grep ${{i}} {input.func} | perl -lane 'print $F[4]," ",$F[0]' | sort -k 1,1 -k 2,2 | uniq >> {SPEC}.ann.${{i}}; done
-      printf \"IDs IEA Gene\\n\" > {SPEC}.ann.GO;
+      printf \"IDs IEA Gene\\n\" > {SPEC}.ann.GO; 
       grep -P  "((GO:\d+)\|?)+" {input.func} | sed -r "s/^([^\\t]+)\\t+.+\\t((GO:.+\|?)+).+/\\1\\t\\2/" | cut -f 1,2 | sort -u | perl -lane 'foreach $GO (split(/\|/,$F[1])) {{print $GO," IEA ",$F[0]}};' | sort -k 1,1 -k 3,3 | uniq >> {SPEC}.ann.GO
-      cat {input.func}  | grep ": " | grep -v GO | sed -r 's/:\s+/:/g' | cut -f 1,15 | perl -lane '@array = split(/\|/,$F[1]); foreach my $GO (@array){{print $GO," ",$F[0];}}' | sed -r 's/\+[^ ]+/ /' | sort -k 1,1 -k 3,3  | uniq | sed -r 's/:/ /' | sed -r 's/KEGG /KEGG ko/' | sed -r s'/\\s+/ /g' > pathways
+      cat {input.func}  | grep ": " | grep -v GO | sed -r 's/:\s+/:/g' | cut -f 1,15 | perl -lane '@array = split(/\|/,$F[1]); foreach my $GO (@array){{print $GO," ",$F[0];}}' | sed -r 's/\+[^ ]+/ /' | sort -k 1,1 -k 3,3  | uniq | sed -r 's/:/ /' | sed -r 's/KEGG /KEGG ko/' | sed -r s'/\\s+/ /g' > pathways 
       for i in `cut -f 1 -d  ' ' pathways | sort -u`; do printf "ANN\tIDs\n" > {SPEC}.ann.${{i}}; grep ${{i}} pathways | cut -f 2,3 -d  ' '| sort -k 1,1 -k 2,2 | uniq >> {SPEC}.ann.${{i}}; done
-      printf "ANN IDs\n" > {SPEC}.ann.IPR;
+      printf "ANN IDs\n" > {SPEC}.ann.IPR; 
       grep IPR {input.func} | cut -f 1,12 | sort -k 1,1 -k 2,2 | uniq | perl -lane 'printf "$F[1] $F[0]\n"'>> {SPEC}.ann.IPR
       touch {output}
       """
@@ -254,3 +258,7 @@ rule refGen:
      shell: """
      STAR --runThreadN {threads} --runMode genomeGenerate --genomeDir {WORKDIR} --genomeFastaFiles {input} --sjdbGTFfile {GTF} --sjdbOverhang 100
      """
+
+
+
+
