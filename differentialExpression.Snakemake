@@ -100,7 +100,7 @@ rule revigo:
      
 
 
-     parallel -j {threads} "cat {{}} | cut -f 2,3 {{}} -d ';' | sed -r 's/\\\"//g' | sed -r 's/;/ /' > {{}}.pV" ::: *.gene.GO.csv
+     parallel -j {threads} "cut -f 2,3 {{}} -d ';' | sed -r 's/\\\"//g' | sed -r 's/;/ /' > {{}}.pV" ::: *.gene.GO.csv
      for i in *.pV; do 
      	 j=`echo ${{i}}`;
      	 echo ${{j}};
@@ -117,7 +117,7 @@ rule revigo:
 
      
      for i in `ls *.pie?? *.table??`; do Rscript ${{i}}; done
-     for i in *.table??; do cat -A $i | grep -Po "\(\"(G|t)[^^]+" | sed -r 's/(\(|\)|\"|,$)//g' | sed -r 's/, / /g' > $i.summary.csv; done
+     for i in *.table??; do cat -A $i | grep -Po "\(\\"(G|t)[^^]+" | sed -r 's/(\(|\)|\"|,$)//g' | sed -r 's/, / /g' > $i.summary.csv; done
      for i in `ls *kobas.kegg *kobas.GO`; do echo "#Term;Database;ID;Input number;Background number;P-Value;Corrected P-Value;Input;Hyperlink" | sed -r 's/;/,/g' |  cat - ${{i}}  | sed -r "s/\t/,/g" > $i.csv; done
      for i in *.csv; do soffice --headless --convert-to xls ${{i}} &  done
      touch {output}
