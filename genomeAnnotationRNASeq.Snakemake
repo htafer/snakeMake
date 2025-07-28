@@ -1,130 +1,194 @@
-#run snaxli kemake
-#
-#snakemake -d `pwd` -s `pwd`/genomeAnnotationRNASeq.Snakemake --stats snakemake.stats -j 100 --cluster 'sbatch {params.cluster}'
+"""
+RNA-Seq Based Genome Annotation Pipeline
+---------------------------------------
+This Snakemake workflow performs comprehensive genome annotation using RNA-seq data:
 
-#################################
-#                               #
-#     Import modules            #
-#                               #
-#################################
+1. RNA-seq Processing:
+   - Read alignment (STAR)
+   - Transcript assembly (Trinity, Cufflinks)
+   - PASA alignment and assembly
+
+2. Annotation:
+   - Protein-coding gene identification
+   - lncRNA prediction (CPAT)
+   - Novel transcript discovery
+   - Functional annotation (BLAST, PFAM)
+
+Usage:
+    snakemake -d `pwd` -s `pwd`/genomeAnnotationRNASeq.Snakemake \
+        --stats snakemake.stats -j 100 --cluster 'sbatch {params.cluster}'
+
+Requirements:
+- STAR
+- Trinity
+- Cufflinks
+- PASA
+- CPAT
+- BLAST+
+- PFAM
+- BEDTools
+- MySQL (for PASA)
+
+Author: htafer
+Last Updated: 2025-07-28
+"""
 
 import math
 import os
+import fnmatch
+from typing import List, Optional, Callable, Set, Any
+from snakemake.utils import min_version
 
-#################################
-#                               #
-#      Own function definition  #
-#                               #
-#################################
+# Ensure minimum Snakemake version
+min_version("6.0.0")
 
+# Utility Functions
+def count_fasta_entries(file_name: str) -> int:
+    """
+    Count the number of FASTA entries in a file.
+    
+    Args:
+        file_name: Path to the FASTA file
+        
+    Returns:
+        Total number of sequences (entries starting with '>')
+    """
+    with open(file_name) as f:
+        return sum(1 for line in f if line.startswith(">"))
 
+def calculate_chunks(total_entries: int, entries_per_chunk: int) -> int:
+    """
+    Calculate number of chunks needed for parallel processing.
+    
+    Args:
+        total_entries: Total number of entries to process
+        entries_per_chunk: Maximum entries per chunk
+        
+    Returns:
+        Number of chunks needed
+    """
+    return math.floor(2 * total_entries / entries_per_chunk + 1)
 
-def getFileNumber(file_name, entryNumber):
-      f = open(file_name)
-      total = 0
-      for line in f:
-          if ">" in line:
-              total += 1
-      f.close()
-      return math.floor(2*total/entryNumber+1);    
+def get_bam_files(dir_path: str, species: str) -> List[str]:
+    """
+    Get list of BAM files for a species.
+    
+    Args:
+        dir_path: Base directory path
+        species: Species identifier
+        
+    Returns:
+        List of BAM file paths that match the pattern
+    """
+    species_dir = os.path.join(dir_path, f"{species}.reads")
+    return [f for f in os.listdir(species_dir) 
+            if fnmatch.fnmatch(f, "*.*.bam")]
 
-
-#get bam file
-def getBamFile(dir,species):
-      list=[];
-      for file in os.listdir(dir+'/'+species+'.reads/.'):
-            if fnmatch.fnmatch(file,'*.*.bam'):
-                  list.append(file);
-      return list
-
-#uniquify ids
-def f10(seq, idfun=None):
-    seen = set()
-    results=[]
-    if idfun is None:
-        for x in seq:
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    else:
-        for x in seq:
-            x = idfun(x)
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    return results
-
-
-
-#################################
-#                               #
-#      Variables setup          #
-#                               #
-#################################
-
-    #################################                
-    #Environment                    #
-    #################################
-WORKDIR="/home/lv70539/htafer/genomeAnnotationTranscript"
-#WORKDIR="/media/vsc2/genomeAnnotation"
-#WORKDIR="/home/htafer/annotation/"
-#WORKDIR="/media/work/genomeAnnotation"
-#WORKDIR="/home/htafer/genomeAnnotationNew"
-#COMPUTEDIR="/tmp"
-
-COMPUTEDIR="/global/lv70539/htafer"
-#COMPUTEDIR="/scratch"
-
-    #################################
-    #THREADS                        #
-    #################################
-
-THREADS=16
-
-    ##################################
-    #FILES                           #
-    ##################################
-
-#GENOME
-ID="claImm";
-REF=ID+".fasta"
-
-#BAMFILES
-BAMFILES="./reads/{samples}.fastq"
-BAMS ,= glob_wildcards(BAMFILES)
-print(BAMS);
-
-#EVMWEIGHT
-EVMWEIGHT=WORKDIR+"/weightFile.cfg"
-
-#DN from genomeAnnotationDN
-#DN=WORKDIR+"/cImmundaBroad.gff"
-DNGFF=WORKDIR+"/claImm.allEvm2.gff"
-DNGTF=WORKDIR+"/claImm.allEvm2.gtf"
-
-PFAM="/global/lv70539/htafer/share/"
-BLAST="/global/lv70539/htafer/share/eurotiomycetesUniref90.clean.fasta"
-
-    ##################################
-    #BIOLOGY                         #
-    ##################################
-
-#BIOLOGY
-INTRON=2000
+def get_unique_elements(seq: List[Any], 
+                       key_func: Optional[Callable[[Any], Any]] = None) -> List[Any]:
+    """
+    Get unique elements from a sequence while preserving order.
+    
+    Args:
+        seq: Input sequence
+        key_func: Optional function to extract comparison key
+        
+    Returns:
+        List of unique elements
+    """
+    seen: Set[Any] = set()
+    return [x for x in seq 
+            if not (key_func(x) if key_func else x) in seen 
+            and not seen.add(key_func(x) if key_func else x)]
 
 
-#Which rules are run locally # depends on which computer the pipeline is running
-#localrules Segemehl
-#localrules: all, clean, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, prepareGFFforEVM, mergeFastq
 
-#Localrules STAR
-localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, prepareGFFforEVM, mergeFastq, STARIdx,otherTranscript, lncRNA
+# Configuration
+#-------------
 
-#cluster: STAR, mergeBam,  cufflinks, trinityDeNovo, trinityAlignment, normalization, PASA, augustus, EVM, postPASA
+# Environment Setup
+WORKDIR = "/home/lv70539/htafer/genomeAnnotationTranscript"  # Working directory
+COMPUTEDIR = "/global/lv70539/htafer"  # Temporary computation directory
 
-#localrules: all, clean, STAR, STARIdx, bamToFastq, mergeBam, cufflinks, composeMerge, mergeAssemblies, normalization, trinityAlignment, trinityDeNovo, PASA, PASAtrainingset, PASAhints, augustus, mergeFastq, PASAtrainingset, prepareGFFforEVM, EVM, postPASA
+# Computational Resources
+THREADS = 16  # Number of parallel threads
+
+# Input Files
+# -----------
+
+# Genome
+ID = "claImm"  # Genome identifier
+REF = f"{ID}.fasta"  # Reference genome FASTA
+
+# RNA-seq Data
+BAMFILES = "./reads/{samples}.fastq"  # RNA-seq FASTQ pattern
+BAMS, = glob_wildcards(BAMFILES)  # Available RNA-seq samples
+
+# Reference Files
+DNGFF = f"{WORKDIR}/{ID}.allEvm2.gff"  # De novo gene predictions
+DNGTF = f"{WORKDIR}/{ID}.allEvm2.gtf"  # De novo gene predictions (GTF)
+
+# Databases
+PFAM = "/global/lv70539/htafer/share/"  # PFAM database directory
+BLAST = "/global/lv70539/htafer/share/eurotiomycetesUniref90.clean.fasta"  # BLAST database
+
+# EVM Configuration
+EVMWEIGHT = f"{WORKDIR}/weightFile.cfg"  # EVM weights configuration
+
+# Biological Parameters
+INTRON = 2000  # Maximum intron length (bp)
+
+# Execution Control
+# ----------------
+
+# Rules to run locally (not on cluster)
+localrules: (
+    # Core rules
+    all, 
+    clean,
+    # Assembly rules
+    composeMerge,
+    mergeAssemblies,
+    # PASA rules
+    PASAtrainingset,
+    PASAhints,
+    # Annotation rules
+    prepareGFFforEVM,
+    # File handling
+    mergeFastq,
+    STARIdx,
+    # Transcript analysis
+    otherTranscript,
+    lncRNA
+)
+
+# Rules to run on cluster (commented for reference)
+# cluster_rules = [
+#     'STAR',         # Read alignment
+#     'mergeBam',     # BAM processing
+#     'cufflinks',    # Transcript assembly
+#     'trinityDeNovo',  # De novo assembly
+#     'trinityAlignment',  # Genome-guided assembly
+#     'normalization',  # Read normalization
+#     'PASA',          # Transcript processing
+#     'augustus',      # Gene prediction
+#     'EVM',           # Evidence modeler
+#     'postPASA'       # Post-processing
+# ]
+
+# Directory Structure
+DIRS = {
+    'logs': 'logs',
+    'reads': 'reads',
+    'gff': 'gff',
+    'blast': 'BLAST',
+    'pfam': 'PFAM',
+    'cpat': 'CPAT'
+}
+
+# Create necessary directories
+for dir_path in DIRS.values():
+    os.makedirs(dir_path, exist_ok=True)
 
 ##################################
 ##                               #
@@ -133,112 +197,324 @@ localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhint
 ##################################
 
 
+# Default Target Rule
 rule all:
-     input: ID+".noKnownFunc.gff3"
+    """
+    Generate complete annotation including coding genes,
+    lncRNAs, and other transcripts.
+    """
+    input: 
+        transcripts = f"{ID}.noKnownFunc.gff3"
 
+# Transcript Classification Rules
+#-----------------------------
 
-##################################################################################                              
-#                                                                                #
-#                  Get The Rest                                                  #
-#                                                                                #
-##################################################################################                              
-
+# Identify Novel Transcripts
 rule otherTranscript:
-     input: lnc=ID+".lncRNA.gff3", coding="./gff/"+ID+".allProtein.gff3", pasaAssemblies="./reads/"+ID+".PASA/"+ID+".pasa_assemblies.gff3"
-     output: ID+".noKnownFunc.gff3"
-     shell:"""    
-     mergealign.pl < {input.pasaAssemblies} | cut -f 1-9 >  merged.gff 
-     bedtools intersect -s -v -a merged.gff -b {input.lnc} | bedtools intersect -s -v -a - -b {input.coding} | cut -f 9  | cut -f 1 -d " " | sort -u | fgrep -wf - reads/claImm.PASA/claImm.pasa_assemblies.gff3 > {output}
-     """
+    """
+    Identify transcripts that are neither protein-coding
+    nor long non-coding RNAs (potential novel RNA types).
+    """
+    input:
+        lnc = f"{ID}.lncRNA.gff3",
+        coding = f"gff/{ID}.allProtein.gff3",
+        pasa = f"reads/{ID}.PASA/{ID}.pasa_assemblies.gff3"
+    output:
+        novel = f"{ID}.noKnownFunc.gff3"
+    log:
+        "logs/transcripts/other_transcripts.log"
+    shell:
+        """
+        # Merge aligned transcripts
+        mergealign.pl < {input.pasa} | \
+            cut -f 1-9 > merged.gff 2> {log}
 
+        # Find transcripts not overlapping with known types
+        bedtools intersect \
+            -s -v \
+            -a merged.gff \
+            -b {input.lnc} | \
+        bedtools intersect \
+            -s -v \
+            -a - \
+            -b {input.coding} | \
+        cut -f 9 | \
+        cut -f 1 -d " " | \
+        sort -u | \
+        fgrep -wf - {input.pasa} \
+        > {output.novel} 2>> {log}
+        """
 
-#################################################################################                              
-#                                                                               #
-#                  Get lncRNAs                                                  #
-#                                                                               #
-#################################################################################                              
-########################            
-####    lncRNA      ####            
-########################            
-
+# Long Non-coding RNA Identification
 rule lncRNA:
-     input: ids="./CPAT/cpat.results", blast="BLAST/blast.coding.candidates", pfam="PFAM/"+ID+".pfam.coding.candidates", pasaAssemblies="./reads/"+ID+".PASA/"+ID+".pasa_assemblies.gff3"
-     output: lnc=ID+".lncRNA.gff3"
-     threads: THREADS
-     shell:"""                      
-     cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | sort -u > coding.candidates                               
-     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results                      
-     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] coding.candidates`; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f - {WORKDIR}/{input.pasaAssemblies} > {WORKDIR}/{output.lnc}                     
-     """
-########################            
-####      BLAST     ####            
-########################            
+    """
+    Identify long non-coding RNAs using CPAT predictions
+    and excluding transcripts with protein-coding evidence
+    from BLAST and PFAM.
+    """
+    input:
+        cpat = "CPAT/cpat.results",
+        blast = "BLAST/blast.coding.candidates",
+        pfam = f"PFAM/{ID}.pfam.coding.candidates",
+        pasa = f"reads/{ID}.PASA/{ID}.pasa_assemblies.gff3"
+    output:
+        lnc = f"{ID}.lncRNA.gff3"
+    threads: THREADS
+    log:
+        "logs/transcripts/lncrna.log"
+    shell:
+        """
+        # Combine protein-coding evidence
+        cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | \
+            sort -u > coding.candidates 2> {log}
 
+        # Extract CPAT IDs
+        cut -f 1 {WORKDIR}/{input.cpat} > id.cpat.results
+
+        # Find transcripts without protein-coding evidence
+        cat id.cpat.results | \
+        perl -lane '
+            my $count=`grep -cw $F[0] coding.candidates`;
+            chomp($count);
+            if($count==0){{print $F[0]}};
+        ' | \
+        sort -u | \
+        fgrep -w -f - {WORKDIR}/{input.pasa} \
+        > {WORKDIR}/{output.lnc} 2>> {log}
+        """
+# Protein Evidence Analysis Rules
+#-----------------------------
+
+# BLAST Search Against Known Proteins
 rule blast:
-     input: cpat="./CPAT/"+ID+".cpat.fasta"
-     output: blast="BLAST/blast.coding.candidates"
-     threads: THREADS
-     params: cluster="--partition=mem_0064 --qos=normal_0064"
-     shell:"""
-     mkdir -p BLAST
-     cd BLAST                       
-     #formatdb -i {BLAST} -p T -n uniprot90S                                 
-     blastx -query {WORKDIR}/{input.cpat} -db {BLAST} -num_threads {threads} -outfmt 7 -out blast.out            
-     cat blast.out | perl -lane 'if($F[7]>$F[6] && $F[10]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}      
-     """
+    """
+    Search transcript sequences against protein database using BLASTX
+    to identify potential protein-coding transcripts.
+    
+    Parameters:
+        E-value cutoff: 0.001
+        Output format: tabular (format 7)
+    """
+    input:
+        transcripts = f"CPAT/{ID}.cpat.fasta"
+    output:
+        candidates = "BLAST/blast.coding.candidates"
+    threads: THREADS
+    params:
+        cluster = "--partition=mem_0064 --qos=normal_0064",
+        evalue = 0.001,
+        outfmt = 7  # Tabular format with comments
+    log:
+        "logs/blast/search.log"
+    shell:
+        """
+        # Create output directory
+        mkdir -p BLAST
+        cd BLAST
 
-########################            
-####     PFAM       ####            
-########################            
+        # Run BLASTX search
+        blastx \
+            -query {WORKDIR}/{input.transcripts} \
+            -db {BLAST} \
+            -num_threads {threads} \
+            -outfmt {params.outfmt} \
+            -evalue {params.evalue} \
+            -out blast.out \
+            2> {WORKDIR}/{log}
 
+        # Filter results and format output
+        cat blast.out | \
+        perl -lane '
+            # Check score and E-value
+            if($F[7]>$F[6] && $F[10]<{params.evalue}) {{
+                print;
+            }}
+        ' | \
+        cut -f 1 | \
+        sort -u | \
+        sed -r 's/asmbl/>asmbl/' \
+        > {WORKDIR}/{output.candidates}
+        """
+
+# PFAM Domain Search
 rule pfam:
-     input: "./CPAT/"+ID+".cpat.fasta"
-     output: "PFAM/"+ID+".pfam.coding.candidates"
-     threads: THREADS
-     params: cluster="--partition=mem_0064 --qos=normal_0064"
-     shell: """                     
-     mkdir -p PFAM                  
-     cd PFAM                        
-     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile pfam.out                             
-     cat pfam.out | grep -v '#' | perl -lane 'if($F[2]>$F[1] && $F[12]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output}                                     
-     """
+    """
+    Search for protein domains in transcript sequences using PFAM
+    to identify potential protein-coding transcripts.
+    
+    Parameters:
+        E-value cutoff: 0.001
+        Multi-threading enabled
+    """
+    input:
+        transcripts = f"CPAT/{ID}.cpat.fasta"
+    output:
+        candidates = f"PFAM/{ID}.pfam.coding.candidates"
+    threads: THREADS
+    params:
+        cluster = "--partition=mem_0064 --qos=normal_0064",
+        evalue = 0.001
+    log:
+        "logs/pfam/search.log"
+    shell:
+        """
+        # Create output directory
+        mkdir -p PFAM
+        cd PFAM
+
+        # Run PFAM search
+        pfam_scan.pl \
+            -fasta {WORKDIR}/{input.transcripts} \
+            -dir {PFAM} \
+            -cpu {threads} \
+            -outfile pfam.out \
+            2> {WORKDIR}/{log}
+
+        # Filter results and format output
+        cat pfam.out | \
+        grep -v '#' | \
+        perl -lane '
+            # Check domain coordinates and E-value
+            if($F[2]>$F[1] && $F[12]<{params.evalue}) {{
+                print;
+            }}
+        ' | \
+        cut -f 1 | \
+        sort -u | \
+        sed -r 's/asmbl/>asmbl/' \
+        > {WORKDIR}/{output.candidates}
+        """
 
 
 
-################                    
-#### CPAT   ####                    
-################                    
+# CPAT Analysis Rules
+#------------------
 
+# Run Coding Potential Assessment
 rule cpat:
-     input: gene="noOverlap.fasta", fa="assemblies.fa", nonc="nonconding.fasta", coding="codingseq.fasta"
-     output: fasta="./CPAT/"+ID+".cpat.fasta", results="./CPAT/cpat.results"
-     threads: THREADS
-     shell:"""                      
-     mkdir -p CPAT
-     cd CPAT
-     make_hexamer_tab.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} > hexamer.tab
-     make_logitModel.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} -x hexamer.tab -o {ID}
-     module load python/2.7
-     cpat.py -d {ID}.logit.RData -x hexamer.tab -g {WORKDIR}/{input.gene} -o {ID}.cpat
-     cat {ID}.cpat |  perl -lane 'if($F[5]<0.01){{print;}}' | sort -k 2,2gr | sed -r 's/ASMBL/asmbl/' > {WORKDIR}/{output.results}
-     parallel -j {threads} 'grep -P "{{}}$" {WORKDIR}/{input.fa} -A 1 ' ::: `cat {WORKDIR}/{output.results}  | cut -f 1 | grep asmbl` > {WORKDIR}/{output.fasta}
-     """
+    """
+    Run Coding Potential Assessment Tool (CPAT) to identify
+    potential coding and non-coding transcripts.
+    
+    Parameters:
+        Coding probability cutoff: 0.01
+        Uses hexamer frequency and logistic regression model
+    """
+    input:
+        gene = "noOverlap.fasta",          # Test sequences
+        assemblies = "assemblies.fa",       # All assemblies
+        noncoding = "nonconding.fasta",    # Known non-coding sequences
+        coding = "codingseq.fasta"         # Known coding sequences
+    output:
+        fasta = f"CPAT/{ID}.cpat.fasta",   # Filtered sequences
+        results = "CPAT/cpat.results"       # CPAT predictions
+    threads: THREADS
+    params:
+        prob_cutoff = 0.01,    # Coding probability cutoff
+        python_ver = "2.7"     # Required Python version
+    log:
+        "logs/cpat/analysis.log"
+    shell:
+        """
+        # Create output directory
+        mkdir -p CPAT
+        cd CPAT
 
+        # Generate hexamer frequency table
+        make_hexamer_tab.py \
+            -c {WORKDIR}/{input.coding} \
+            -n {WORKDIR}/{input.noncoding} \
+            > hexamer.tab 2> {WORKDIR}/{log}
 
+        # Create logistic regression model
+        make_logitModel.py \
+            -c {WORKDIR}/{input.coding} \
+            -n {WORKDIR}/{input.noncoding} \
+            -x hexamer.tab \
+            -o {ID} 2>> {WORKDIR}/{log}
+
+        # Load required Python version
+        module load python/{params.python_ver}
+
+        # Run CPAT
+        cpat.py \
+            -d {ID}.logit.RData \
+            -x hexamer.tab \
+            -g {WORKDIR}/{input.gene} \
+            -o {ID}.cpat 2>> {WORKDIR}/{log}
+
+        # Filter and format results
+        cat {ID}.cpat | \
+        perl -lane '
+            if($F[5]<{params.prob_cutoff}) {{
+                print;
+            }}
+        ' | \
+        sort -k 2,2gr | \
+        sed -r 's/ASMBL/asmbl/' \
+        > {WORKDIR}/{output.results}
+
+        # Extract sequences for filtered results
+        parallel -j {threads} \
+            'grep -P "{{}}$" {WORKDIR}/{input.assemblies} -A 1' \
+            ::: $(cat {WORKDIR}/{output.results} | cut -f 1 | grep asmbl) \
+            > {WORKDIR}/{output.fasta}
+        """
+
+# Prepare Training Files for CPAT
 rule prepareFiles:
-     input: fa="assemblies.fa", intron="./gff/"+ID+".PASAhints.gff", updateAnn="./gff/"+ID+".allProtein.gff3"
-     output: coding="codingseq.fasta", nonc="nonconding.fasta"
-     params:
-     threads: THREADS
-     shell:"""                      
-     #We have to prepare a training data set in order to train CPAT         
-     #Start with the protein dataset
-     getAnnoFasta.pl {input.updateAnn} --seqfile {REF}                      
-     cat "./gff/{ID}.allProtein3.cdsexons | sed -r 's/.cds[0-9]//g' | perl -lane 'BEGIN{{my $previousId="";}} if($F[0]=~/>/){{if($F[0] eq $previousId){{next;}}else{{$previousId=$F[0]; print "\n",$F[0]}}}}else{{printf $F[0]}}' > {output.coding}
-     #Now generate the non coding dataset with the intron                   
-     cat {input.intron} | sed -r 's/;src=E//g' > temp.introns               
-     parallel -j {threads} 'grep -P "{{}}$" {input.fa} -A 1 ' ::: `cat temp.introns | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.nonc}
-     """
+    """
+    Prepare training datasets for CPAT by extracting known
+    coding and non-coding sequences.
+    """
+    input:
+        assemblies = "assemblies.fa",
+        introns = f"gff/{ID}.PASAhints.gff",
+        annotation = f"gff/{ID}.allProtein.gff3"
+    output:
+        coding = "codingseq.fasta",      # Known coding sequences
+        noncoding = "nonconding.fasta"   # Known non-coding sequences
+    threads: THREADS
+    log:
+        "logs/cpat/prepare_files.log"
+    shell:
+        """
+        # Extract coding sequences from annotation
+        getAnnoFasta.pl {input.annotation} \
+            --seqfile {REF} 2> {log}
+
+        # Process coding sequences
+        cat "./gff/{ID}.allProtein3.cdsexons" | \
+        sed -r 's/.cds[0-9]//g' | \
+        perl -lane '
+            BEGIN{{my $previousId="";}}
+            if($F[0]=~/>/) {{
+                if($F[0] eq $previousId) {{
+                    next;
+                }} else {{
+                    $previousId=$F[0];
+                    print "\\n",$F[0]
+                }}
+            }} else {{
+                printf $F[0]
+            }}
+        ' > {output.coding} 2>> {log}
+
+        # Process non-coding (intron) sequences
+        cat {input.introns} | \
+            sed -r 's/;src=E//g' > temp.introns
+
+        parallel -j {threads} \
+            'grep -P "{{}}$" {input.assemblies} -A 1' \
+            ::: $(cat temp.introns | \
+                  cut -f 9 | \
+                  sed -r 's/.+Target=([^$]+)/\\1/' | \
+                  sort -u) \
+            > {output.noncoding} 2>> {log}
+
+        # Cleanup
+        rm -f temp.introns
+        """
 
 ################
 #   INTERSECT  #

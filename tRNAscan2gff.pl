@@ -1,41 +1,140 @@
-#!/usr/bin/perl -w
+#!/usr/bin/env perl
 
 use strict;
 use warnings;
+use Getopt::Long;
+use Pod::Usage;
 
-# perl ./trnascan2gff.pl < tRNAscanSE.out
-# cat tRNAscanSE.out | perl ./trnascan2gff.pl
-# chmod 755 ./trnascan2gff.pl < input
-# ./trnascan2gff.pl < input
+=head1 NAME
 
-<STDIN>;
-<STDIN>;
-<STDIN>;
+tRNAscan2gff.pl - Convert tRNAscan-SE output to GFF3 format
 
-while(my $line=<STDIN>){
-    my @data = split(/\s+/,$line);
-    if($data[2] < $data[3]){
-	#print gene
-        print "$data[0]\ttRNAscan-SE\tgene\t$data[2]\t$data[3]\t$data[8]\t+\t.\tID=TU.$data[0].tRNA-$data[4].$data[1];Name=TU.$data[0].tRNA-$data[4].$data[1]\n";
-        #print exon
-        if($data[6]+$data[7]>0){
-            print "$data[0]\ttRNAscan-SE\texon\t$data[2]\t$data[6]\t$data[8]\t+\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon1; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
-            print "$data[0]\ttRNAscan-SE\texon\t$data[7]\t$data[3]\t$data[8]\t+\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon2; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
-        }
-        else{
-            print "$data[0]\ttRNAscan-SE\texon\t$data[2]\t$data[3]\t$data[8]\t+\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon1; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
-        }
+=head1 SYNOPSIS
+
+    perl tRNAscan2gff.pl [options] < tRNAscan-SE.out > output.gff3
+    
+Options:
+    --skip-header    Number of header lines to skip (default: 3)
+    --help          Display this help message
+    --man           Display detailed documentation
+
+=head1 DESCRIPTION
+
+This script converts tRNAscan-SE output to GFF3 format. It processes the input
+line by line and generates GFF3-compliant output with gene and exon features.
+It handles both single-exon and split tRNAs (intron-containing) correctly.
+
+Input format expected from tRNAscan-SE:
+Column 1: Sequence name
+Column 2: tRNA number
+Column 3: Start position
+Column 4: End position
+Column 5: tRNA type
+Column 6,7: Intron coordinates (if present)
+Column 8: Score
+
+=cut
+
+# Default parameters
+my $header_lines = 3;
+my $help = 0;
+my $man = 0;
+
+# Parse command line options
+GetOptions(
+    'skip-header=i' => \$header_lines,
+    'help'         => \$help,
+    'man'          => \$man
+) or pod2usage(2);
+
+pod2usage(1) if $help;
+pod2usage(-exitval => 0, -verbose => 2) if $man;
+
+# Print GFF3 header
+print "##gff-version 3\n";
+
+# Skip header lines
+for (1..$header_lines) {
+    my $header = <STDIN>;
+    unless (defined $header) {
+        die "Error: Input file appears to be empty or too short\n";
     }
-    else {
-        #print gene
-        print "$data[0]\ttRNAscan-SE\tgene\t$data[3]\t$data[2]\t$data[8]\t-\t.\tID=TU.$data[0].tRNA-$data[4].$data[1];Name=TU.$data[0].tRNA-$data[4].$data[1]\n";
-        #print exon
-        if($data[6]+$data[7]>0){
-            print "$data[0]\ttRNAscan-SE\texon\t$data[3]\t$data[7]\t$data[8]\t-\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon1; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
-            print "$data[0]\ttRNAscan-SE\texon\t$data[6]\t$data[2]\t$data[8]\t-\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon2; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
+}
+
+sub print_gff_feature {
+    my ($seq_id, $source, $type, $start, $end, $score, $strand, $phase, $attrs) = @_;
+    print join("\t",
+        $seq_id, $source, $type, $start, $end, $score, $strand, $phase, $attrs
+    ) . "\n";
+}
+
+while (my $line = <STDIN>) {
+    chomp $line;
+    
+    # Parse line into fields
+    my @fields = split(/\s+/, $line);
+    
+    # Validate input format
+    unless (@fields >= 9) {
+        warn "Warning: Skipping malformed line: $line\n";
+        next;
+    }
+    
+    # Extract relevant fields
+    my ($seq_id, $trna_num, $start, $end, $trna_type, $intron_start, $intron_end, undef, $score) = @fields;
+    
+    # Determine strand and ensure start < end
+    my ($final_start, $final_end, $strand);
+    if ($start < $end) {
+        $final_start = $start;
+        $final_end = $end;
+        $strand = '+';
+    } else {
+        $final_start = $end;
+        $final_end = $start;
+        $strand = '-';
+    }
+    
+    # Generate feature ID
+    my $feature_base = "$seq_id.tRNA-$trna_type.$trna_num";
+    my $gene_id = "TU.$feature_base";
+    
+    # Print gene feature
+    print_gff_feature(
+        $seq_id, 'tRNAscan-SE', 'gene',
+        $final_start, $final_end, $score, $strand, '.',
+        "ID=$gene_id;Name=$gene_id"
+    );
+    
+    # Handle exons
+    if ($intron_start + $intron_end > 0) {
+        # Split tRNA with intron
+        my ($exon1_start, $exon1_end, $exon2_start, $exon2_end);
+        if ($strand eq '+') {
+            ($exon1_start, $exon1_end) = ($final_start, $intron_start);
+            ($exon2_start, $exon2_end) = ($intron_end, $final_end);
+        } else {
+            ($exon1_start, $exon1_end) = ($intron_end, $final_end);
+            ($exon2_start, $exon2_end) = ($final_start, $intron_start);
         }
-        else{
-            print "$data[0]\ttRNAscan-SE\texon\t$data[3]\t$data[2]\t$data[8]\t-\t.\tID=exon.$data[0].tRNA-$data[4].$data[1].exon1; Parent=TU.$data[0].tRNA-$data[4].$data[1]\n";
-        }
+        
+        # Print split exons
+        print_gff_feature(
+            $seq_id, 'tRNAscan-SE', 'exon',
+            $exon1_start, $exon1_end, $score, $strand, '.',
+            "ID=exon.$feature_base.exon1;Parent=$gene_id"
+        );
+        print_gff_feature(
+            $seq_id, 'tRNAscan-SE', 'exon',
+            $exon2_start, $exon2_end, $score, $strand, '.',
+            "ID=exon.$feature_base.exon2;Parent=$gene_id"
+        );
+    } else {
+        # Single exon tRNA
+        print_gff_feature(
+            $seq_id, 'tRNAscan-SE', 'exon',
+            $final_start, $final_end, $score, $strand, '.',
+            "ID=exon.$feature_base.exon1;Parent=$gene_id"
+        );
     }
 }

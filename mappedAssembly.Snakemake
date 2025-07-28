@@ -1,46 +1,189 @@
-#run snakemake
+# =====================================
+# mappedAssembly.Snakemake
+# =====================================
 #
-#snakemake -d `pwd` -s `pwd`/transcriptomeAssembly.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub -l {params.cluster}'
-#look at https://www.mail-archive.com/bioinfo-general-nci@list.nih.gov/msg00018.html
-#Check parallell environment on cluster.
+# Purpose:
+#   This Snakemake workflow performs genome assembly using MIRA assembler,
+#   incorporating both de novo assembly and mapping to a reference genome.
+#
+# Workflow Steps:
+#   1. Read quality control and preprocessing
+#   2. Mapping to reference genome
+#   3. De novo assembly with MIRA
+#
+# Input Requirements:
+#   - FASTQ files containing sequencing reads
+#   - Reference genome in FASTA format (*.fna)
+#
+# Output Files:
+#   - Assembled genome sequences (*.assembled.fasta)
+#
+# Dependencies:
+#   - MIRA assembler
+#   - SGE cluster environment (for qsub)
+#
+# Usage:
+#   snakemake -s mappedAssembly.Snakemake \
+#     --cluster 'qsub -l {params.cluster}' \
+#     --stats snakemake.stats \
+#     -j <jobs>
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+#
+# =====================================
 
-WORKDIR="/home/lv70539/htafer/mappedAssemblies"
-COMPUTEDIR="/scratch"
-FILES=WORKDIR+"/{id}.fastq"
-IDS,=glob_wildcards(FILES)
-TEMPLATE="cTemplate1.fna"
-STRAIN="chaethomium"
-#Which rules are run locally
-localrules: all
+from snakemake.utils import validate
+import os.path
 
+# Configuration
+configfile: "config.yaml"  # Optional: move parameters to config file
+
+# Directory structure
+WORKDIR = config.get("workdir", "/home/lv70539/htafer/mappedAssemblies")
+COMPUTEDIR = config.get("computedir", "/scratch")
+LOGDIR = "logs"
+
+# Input pattern and sample IDs
+FILES = WORKDIR + "/{id}.fastq"
+IDS, = glob_wildcards(FILES)
+
+# Assembly parameters
+TEMPLATE = config.get("template", "cTemplate1.fna")
+STRAIN = config.get("strain", "chaethomium")
+THREADS = config.get("threads", 64)
+MEMORY = config.get("memory", "200G")
+
+# Validate inputs
+for id in IDS:
+    if not os.path.exists(f"{WORKDIR}/{id}.fastq"):
+        raise ValueError(f"Input FASTQ file not found: {WORKDIR}/{id}.fastq")
+    if not os.path.exists(f"{WORKDIR}/{id}.fna"):
+        raise ValueError(f"Reference genome file not found: {WORKDIR}/{id}.fna")
+# Specify which rules should run locally (not on cluster)
+localrules: 
+    all,
+    clean
+
+# Default target rule
 rule all:
-     input: expand("{id}.assembled.fasta", id=IDS)
+    input: 
+        expand("{id}.assembled.fasta", id=IDS)
 
-
+# Rule: deNovoMira
+# Purpose: Performs genome assembly using MIRA assembler with mapping to reference
 rule deNovoMira:
-     input: "{id}.fastq","{id}.fna"
-     output: "{id}.assembled.fasta"
-     params: cluster="-cwd -V -l mem_free=200G -l h_vmem=200G -pe mpich 64 -q highmem.q"     
-     shell: """
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     uname -a
-     mkdir -p {COMPUTEDIR}/${{prefix}}mira/
-     #Generate manifest
-     echo "project = MyFirstAssembly" > {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "job = genome,mapping,accurate" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "readgroup" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "is_reference" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "data = {WORKDIR}/{input[1]}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "strain = {STRAIN}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "readgroup = assembly" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     seqType="fastq" #We have to specify the type of file
-     echo "data = $seqType::{WORKDIR}/{input[0]}" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "technology = iontor" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     echo "parameters = -GENERAL:number_of_threads=64 -SK:number_of_threads=64 -NW:cmrnl=warn -NW:cac=warn" >> {COMPUTEDIR}/${{prefix}}mira/manifest
-     cd  {COMPUTEDIR}/${{prefix}}mira/
-     mira ./manifest
-     mv {COMPUTEDIR}/${{prefix}}mira {WORKDIR}/{output}
-     """     
+    input:
+        reads = "{id}.fastq",
+        reference = "{id}.fna"
+    output:
+        assembly = "{id}.assembled.fasta"
+    params:
+        # Cluster parameters
+        cluster = "-cwd -V -l mem_free={mem} -l h_vmem={mem} -pe mpich {threads} -q highmem.q".format(
+            mem=MEMORY,
+            threads=THREADS
+        ),
+        # MIRA parameters
+        project = lambda w: f"Assembly_{w.id}",
+        job_type = "genome,mapping,accurate",
+        technology = "iontor",
+        seq_type = "fastq",
+        warning_level = "warn"
+    threads: THREADS
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * 204800,  # 200G * attempt number
+    log:
+        "logs/mira/{id}.log"
+    shell: """
+        (# Create unique working directory
+        prefix=`date --rfc-3339=ns | md5sum | head -c 16`
+        workdir="{COMPUTEDIR}/${{prefix}}mira"
+        
+        # Ensure clean start
+        rm -rf "$workdir"
+        mkdir -p "$workdir"
+        
+        # Generate MIRA manifest file
+        cat > "$workdir/manifest" << EOF
+        project = {params.project}
+        job = {params.job_type}
+        readgroup
+        is_reference
+        data = {WORKDIR}/{input.reference}
+        strain = {STRAIN}
+        readgroup = assembly
+        data = {params.seq_type}::{WORKDIR}/{input.reads}
+        technology = {params.technology}
+        parameters = -GENERAL:number_of_threads={threads} \\
+                    -SK:number_of_threads={threads} \\
+                    -NW:cmrnl={params.warning_level} \\
+                    -NW:cac={params.warning_level}
+        EOF
+        
+        # Run MIRA assembly
+        cd "$workdir"
+        if ! mira ./manifest; then
+            echo "MIRA assembly failed" >&2
+            exit 1
+        fi
+        
+        # Check output exists
+        if [ ! -d "$workdir" ]; then
+            echo "MIRA output directory not found" >&2
+            exit 1
+        fi
+        
+        # Move results to final location
+        mv "$workdir" {WORKDIR}/{output.assembly}) 2> {log}
+        """
 
+# Rule: validate_inputs
+# Purpose: Validates input files and directories
+rule validate_inputs:
+    output:
+        touch("logs/validate.done")
+    run:
+        # Check directories exist
+        if not os.path.exists(WORKDIR):
+            raise ValueError(f"Work directory not found: {WORKDIR}")
+        if not os.path.exists(COMPUTEDIR):
+            raise ValueError(f"Compute directory not found: {COMPUTEDIR}")
+        
+        # Validate sample files
+        missing_files = []
+        for id in IDS:
+            fastq = f"{WORKDIR}/{id}.fastq"
+            fna = f"{WORKDIR}/{id}.fna"
+            
+            if not os.path.exists(fastq):
+                missing_files.append(fastq)
+            elif os.path.getsize(fastq) == 0:
+                missing_files.append(f"{fastq} (empty)")
+                
+            if not os.path.exists(fna):
+                missing_files.append(fna)
+            elif os.path.getsize(fna) == 0:
+                missing_files.append(f"{fna} (empty)")
+        
+        if missing_files:
+            raise ValueError("Missing or empty files:\n" + "\n".join(missing_files))
+
+# Rule: clean
+# Purpose: Remove intermediate files and logs
 rule clean:
-     shell: "rm  *.sh.e* *.sh.o*"
+    params:
+        patterns = [
+            "*.sh.e*",           # SGE error files
+            "*.sh.o*",           # SGE output files
+            "*.assembled.fasta", # Assembled genome files
+            "logs",             # Log directory
+            "*.manifest",       # MIRA manifest files
+            "*.log",            # Log files
+            "*.stats"           # Statistics files
+        ]
+    log:
+        "logs/clean.log"
+    shell: """
+        rm -rf {params.patterns} 2> {log}
+        """

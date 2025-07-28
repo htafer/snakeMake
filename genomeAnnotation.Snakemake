@@ -1,6 +1,29 @@
-#run snakemake
-#
-#snakemake -d `pwd` -s `pwd`/genomeAnnotation.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+
+
+"""
+====================================
+ genomeAnnotation.Snakemake
+====================================
+
+Automated genome annotation pipeline using ab initio and evidence-based methods:
+PASA, Trinity, Cufflinks, Augustus, SNAP, Scipio, CEGMA, and more.
+
+Inputs:
+  - Genome FASTA file
+  - RNA-seq reads (FASTQ/BAM)
+  - Protein databases (e.g., UniProt)
+
+Outputs:
+  - Annotated GFF/GTF files
+  - Intermediate files for each tool
+
+Usage:
+  snakemake -d $(pwd) -s $(pwd)/genomeAnnotation.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+
+Edit paths and environment variables as needed for your cluster setup.
+Author: htafer
+Last Updated: 2025-07-28
+"""
 
 #################################
 #                               #
@@ -8,8 +31,10 @@
 #                               #
 #################################
 
+
 import math
 import os
+import fnmatch
 
 #################################
 #                               #
@@ -18,43 +43,27 @@ import os
 #################################
 
 
+def estimate_fasta_entries(file_name, entry_number):
+    """Estimate the number of entries in a FASTA file, scaled by entry_number."""
+    with open(file_name) as f:
+        total = sum(1 for line in f if line.startswith(">"))
+    return math.floor(2 * total / entry_number + 1)
 
-def getFileNumber(file_name, entryNumber):
-      f = open(file_name)
-      total = 0
-      for line in f:
-          if ">" in line:
-              total += 1
-      f.close()
-      return math.floor(2*total/entryNumber+1);    
+def list_bam_files(directory, species):
+    """Return a list of BAM files for a given species in the specified directory."""
+    search_dir = os.path.join(directory, f"{species}.reads/.")
+    return [file for file in os.listdir(search_dir) if fnmatch.fnmatch(file, "*.*.bam")]
 
-
-#get bam file
-def getBamFile(dir,species):
-      list=[];
-      for file in os.listdir(dir+'/'+species+'.reads/.'):
-            if fnmatch.fnmatch(file,'*.*.bam'):
-                  list.append(file);
-      return list
-
-#uniquify ids
-def f10(seq, idfun=None):
+def unique(seq, key=None):
+    """Return a list of unique elements in order, optionally using a key function."""
     seen = set()
-    results=[]
-    if idfun is None:
-        for x in seq:
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    else:
-        for x in seq:
-            x = idfun(x)
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    return results
+    result = []
+    for x in seq:
+        k = key(x) if key else x
+        if k not in seen:
+            seen.add(k)
+            result.append(x)
+    return result
 
 
 
@@ -64,23 +73,14 @@ def f10(seq, idfun=None):
 #                               #
 #################################
 
-    #################################                
-    #Environment                    #
-    #################################
 
-#WORKDIR="/home/lv70539/htafer/genomeAnnotation"
-#WORKDIR="/media/vsc2/genomeAnnotation"
-#WORKDIR="/home/htafer/annotation/"
-WORKDIR="/media/work/genomeAnnotation"
-COMPUTEDIR="/tmp"
-#COMPUTEDIR="/global/lv70539/htafer"
-#COMPUTEDIR="/scratch"
+# --- Environment setup ---
+WORKDIR = "/media/work/genomeAnnotation"  # Main working directory for annotation
+COMPUTEDIR = "/tmp"                      # Temporary directory for computation
 
-    #################################
-    #THREADS                        #
-    #################################
 
-THREADS=8
+# --- Resource allocation ---
+THREADS = 8  # Number of threads to use for parallelizable steps
 
     ##################################
     #FILES                           #
@@ -100,42 +100,64 @@ GFFS="cegma scipio".split()
 INTRON=2000
 
 
-#Which rules are run locally # depends on which computer the pipeline is running
-localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA
+"""
+Genome Annotation Pipeline
+-------------------------
+This Snakemake workflow performs comprehensive genome annotation using various tools:
+1. RNA-seq based evidence (Trinity, PASA, Cufflinks)
+2. Protein evidence mapping (CEGMA, Scipio)
+3. Ab initio gene prediction (GeneMark-ES)
+4. tRNA annotation (tRNAscan-SE)
+5. Repeat masking (RepeatMasker)
 
+Requirements:
+- Trinity
+- PASA
+- Cufflinks
+- CEGMA
+- Scipio
+- GeneMark-ES
+- tRNAscan-SE
+- RepeatMasker
+- Segemehl
+- Samtools
+- BLAT
+- Parallel
+
+Author: Hakim Tafer
+Version: 1.0.0
+License: MIT
+"""
+
+import os
+from snakemake.utils import min_version
+
+# Ensure minimum Snakemake version
+min_version("6.0.0")
+
+# Define which rules should run locally
+localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, 
+    segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, 
+    trinityDeNovo, PASA
+
+# Default target rule
 rule all:
-     input: expand("reads/{samples}.PASA", samples=BAMS)
+    input: 
+        expand("reads/{samples}.PASA", samples=BAMS)
 
+# --- Configuration Parameters ---
 
+# File and sample definitions
+ID = "cImmunda"  # Genome/sample identifier
+REF = f"{ID}.fasta"  # Reference genome FASTA
+UNIREF = os.path.join(os.environ['HOME'], 
+    "share/database/UniProt90pSaccharomyceta.fasta")  # UniProt reference
+BAMFILES = f"{WORKDIR}/reads/{{samples}}.bam"  # BAM file pattern
+BAMS, = glob_wildcards(BAMFILES)  # List of BAM sample names
+GFFS = ["cegma", "scipio"]  # Types of GFF annotations
 
-
-##################################
-##                               #
-##      tRNAscan-SE              #
-##                               #
-##################################
-#
-#
-#
-#
-#
-
-##################################
-##                               #
-##      Augustus                 #
-##                               #
-##################################
-
-
-##################################
-##                               #
-##      SNAP                     #
-##                               #
-##################################
-
-
-#################################################################################
-#                                                                               #
+# Biological parameters
+INTRON = 2000  # Maximum intron length for gene prediction
 #                             EVIDENCE MAPPING                                  #
 #                                                                               #
 #################################################################################
@@ -147,25 +169,71 @@ rule all:
 ##                               #
 ##################################
 
+# PASA - Program to Assemble Spliced Alignments
 rule PASA:
-     input: dn="reads/{samples}.trinityDN",gg="reads/{samples}.trinityGG",cf="reads/{samples}.cufflinks/transcripts.gtf"
-     output: "reads/{samples}.PASA"
-     params: cluster="-cwd -V"
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/PASA${{prefix}}
-     cd {COMPUTEDIR}/PASA${{prefix}}
-     #Prepare files
-     cat {WORKDIR}/{input.dn}/Trinity.fasta {WORKDIR}/{input.gg}/Trinity-GG.fasta > {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta
-     $PASAHOME/misc_utilities/accession_extractor.pl < {COMPUTEDIR}/PASA${{prefix}}/transcripts.fasta > {COMPUTEDIR}/PASA${{prefix}}/tdn.accs
-     #Prepare alignAssembly.config
-     DBNAME=`echo {input.dn} | sed -r 's/reads\///g' | sed -r 's/.trinityDN//g' `
-     cat $PASAHOME/pasa_conf/pasa.alignAssembly.Template.txt | sed -r "s/DBNAME/${{DBNAME}}/" > ./alignAssembly.config
-     $PASAHOME/scripts/Launch_PASA_pipeline.pl -c ./alignAssembly.config -C -R -g {WORKDIR}/cImmunda.fasta --ALIGNERS blat,gmap -t ./transcripts.fasta --transcribed_is_aligned_orient --TDN ./tdn.accs --cufflinks_gtf {WORKDIR}/{input.cf} -I {INTRON} --stringent_alignment_overlap 30.0 --CPU {threads} 
-     $PASAHOME//scripts/build_comprehensive_transcriptome.dbi -c alignAssembly.config -t transcripts.fasta --min_per_ID 95 --min_per_aligned 30
-     mv {COMPUTEDIR}/PASA${{prefix}} {WORKDIR}/{output}
-     """
+    """
+    Run PASA pipeline to generate high-quality transcript assemblies.
+    This rule combines de novo and genome-guided Trinity assemblies
+    with Cufflinks data to create comprehensive gene models.
+    """
+    input:
+        dn="reads/{samples}.trinityDN",              # De novo Trinity assembly
+        gg="reads/{samples}.trinityGG",              # Genome-guided Trinity assembly
+        cf="reads/{samples}.cufflinks/transcripts.gtf" # Cufflinks assembly
+    output:
+        "reads/{samples}.PASA"
+    params:
+        cluster="-cwd -V",
+        min_identity=95,               # Minimum percent identity for alignments
+        min_aligned=30,               # Minimum percent of transcript aligned
+        alignment_overlap=30.0        # Stringent alignment overlap requirement
+    threads: THREADS
+    log:
+        "logs/PASA/{samples}.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/PASA${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
+
+        # Combine Trinity assemblies
+        cat {WORKDIR}/{input.dn}/Trinity.fasta {WORKDIR}/{input.gg}/Trinity-GG.fasta > $workdir/transcripts.fasta 2> {log}
+
+        # Extract transcript accessions
+        $PASAHOME/misc_utilities/accession_extractor.pl < $workdir/transcripts.fasta > $workdir/tdn.accs 2>> {log}
+
+        # Prepare PASA configuration
+        DBNAME=$(echo {input.dn} | sed -r 's/reads\///g' | sed -r 's/.trinityDN//g')
+        sed -r "s/DBNAME/${{DBNAME}}/" $PASAHOME/pasa_conf/pasa.alignAssembly.Template.txt > ./alignAssembly.config
+
+        # Run PASA pipeline
+        $PASAHOME/scripts/Launch_PASA_pipeline.pl \
+            -c ./alignAssembly.config \
+            -C -R \
+            -g {WORKDIR}/cImmunda.fasta \
+            --ALIGNERS blat,gmap \
+            -t ./transcripts.fasta \
+            --transcribed_is_aligned_orient \
+            --TDN ./tdn.accs \
+            --cufflinks_gtf {WORKDIR}/{input.cf} \
+            -I {INTRON} \
+            --stringent_alignment_overlap {params.alignment_overlap} \
+            --CPU {threads} \
+            2>> {log}
+
+        # Build comprehensive transcriptome
+        $PASAHOME/scripts/build_comprehensive_transcriptome.dbi \
+            -c alignAssembly.config \
+            -t transcripts.fasta \
+            --min_per_ID {params.min_identity} \
+            --min_per_aligned {params.min_aligned} \
+            2>> {log}
+
+        # Move results to final location
+        mv $workdir {WORKDIR}/{output}
+        """
 
 
 
@@ -180,30 +248,79 @@ rule PASA:
 #http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0051188
 
 
+# Trinity De Novo Assembly
 rule trinityDeNovo:
-     input: "reads/{samples}.fastq"
-     output: "reads/{samples}.trinityDN"
-     params: cluster="-cwd -V"
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/trinity${{prefix}}
-     Trinity --seqType fq --single {input} --SS_lib_type F --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}  --max_memory 24G
-     mv {COMPUTEDIR}/trinity${{prefix}} {WORKDIR}/{output}
-     """
+    """
+    Perform de novo transcriptome assembly using Trinity.
+    Uses single-end reads with strand-specific library type Forward.
+    """
+    input:
+        fastq="reads/{samples}.fastq"
+    output:
+        directory("reads/{samples}.trinityDN")
+    params:
+        cluster="-cwd -V",
+        max_memory="24G",      # Maximum memory allocation
+        lib_type="F"           # Strand-specific library type (Forward)
+    threads: THREADS
+    log:
+        "logs/trinity/{samples}.denovo.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/trinity${{prefix}}
+        mkdir -p $workdir
 
+        # Run Trinity de novo assembly
+        Trinity \
+            --seqType fq \
+            --single {input.fastq} \
+            --SS_lib_type {params.lib_type} \
+            --CPU {threads} \
+            --max_memory {params.max_memory} \
+            --output $workdir \
+            2> {log}
 
+        # Move results to final location
+        mv $workdir {WORKDIR}/{output}
+        """
+
+# Trinity Genome-Guided Assembly
 rule trinityAlignment:
-     input: "reads/{samples}.sam.cf"
-     output: dire="reads/{samples}.trinityGG"
-     params: cluster="-cwd -V"     
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/trinity${{prefix}}
-     Trinity --genome_guided_bam {input} --genome_guided_max_intron {INTRON} --max_memory 10G --CPU {threads} --output {COMPUTEDIR}/trinity${{prefix}}
-     mv {COMPUTEDIR}/trinity${{prefix}} {WORKDIR}/{output}
-     """
+    """
+    Perform genome-guided transcriptome assembly using Trinity.
+    Uses aligned RNA-seq reads from BAM files.
+    """
+    input:
+        bam="reads/{samples}.sam.cf"
+    output:
+        directory("reads/{samples}.trinityGG")
+    params:
+        cluster="-cwd -V",
+        max_memory="10G"       # Maximum memory allocation
+    threads: THREADS
+    log:
+        "logs/trinity/{samples}.genome_guided.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/trinity${{prefix}}
+        mkdir -p $workdir
+
+        # Run Trinity genome-guided assembly
+        Trinity \
+            --genome_guided_bam {input.bam} \
+            --genome_guided_max_intron {INTRON} \
+            --max_memory {params.max_memory} \
+            --CPU {threads} \
+            --output $workdir \
+            2> {log}
+
+        # Move results to final location
+        mv $workdir {WORKDIR}/{output}
+        """
 
 
 
@@ -217,38 +334,96 @@ rule trinityAlignment:
 
 
 
+# Cufflinks Assembly Merging
 rule mergeAssemblies:
-     input: 'reads/assemblies.txt'
-     output: 'gff/cufflinks.gff',dir='gff'
-     params: cluster="-cwd -V"
-     threads: THREADS
-     shell:"""
-        cuffmerge -o {output.dir} -s {REF} {input} -p {threads}
-        mv {output.dir}/merged.gtf {output[0]}
-     """
-        
+    """
+    Merge multiple Cufflinks transcript assemblies using Cuffmerge.
+    This creates a unified transcriptome assembly.
+    """
+    input:
+        assemblies='reads/assemblies.txt'
+    output:
+        merged='gff/cufflinks.gff',
+        directory='gff'
+    params:
+        cluster="-cwd -V"
+    threads: THREADS
+    log:
+        "logs/cufflinks/merge_assemblies.log"
+    shell:
+        """
+        # Merge assemblies using reference sequence
+        cuffmerge \
+            -o {output.directory} \
+            -s {REF} \
+            {input.assemblies} \
+            -p {threads} \
+            2> {log}
 
+        # Move merged GTF to final location
+        mv {output.directory}/merged.gtf {output.merged}
+        """
+
+# Create Assembly List
 rule composeMerge:
-     input:
-         expand('reads/{sample}.cufflinks/transcripts.gtf', sample=BAMS)
-     output:
-         txt='reads/assemblies.txt'
-     run:
-         with open(output.txt, 'w') as out:
-             print(*input, sep="\n", file=out)
+    """
+    Create a text file listing all Cufflinks assemblies to be merged.
+    """
+    input:
+        gtf=expand('reads/{sample}.cufflinks/transcripts.gtf', sample=BAMS)
+    output:
+        txt='reads/assemblies.txt'
+    log:
+        "logs/cufflinks/compose_merge.log"
+    run:
+        try:
+            with open(output.txt, 'w') as out:
+                print(*input.gtf, sep="\n", file=out)
+        except Exception as e:
+            print(f"Error writing assembly list: {e}", file=sys.stderr)
+            raise
 
-
+# Cufflinks Transcript Assembly
 rule cufflinks:
-     input: "reads/{samples}.sam.cf"
-     output: dire="reads/{samples}.cufflinks", file="reads/{samples}.cufflinks/transcripts.gtf"
-     params: cluster="-cwd -V"     
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cufflinks -o {COMPUTEDIR}/${{prefix}} -p {threads} -u -I 2000 --max-bundle-length 10000  --min-intron-length 30 {WORKDIR}/{input}
-     mv {COMPUTEDIR}/${{prefix}}/* {WORKDIR}/{output.dire}
-     """
+    """
+    Assemble transcripts from RNA-seq alignments using Cufflinks.
+    Parameters are optimized for fungal genomes.
+    """
+    input:
+        bam="reads/{samples}.sam.cf"
+    output:
+        directory=directory("reads/{samples}.cufflinks"),
+        gtf="reads/{samples}.cufflinks/transcripts.gtf"
+    params:
+        cluster="-cwd -V",
+        max_intron_len=2000,          # Maximum intron length
+        max_bundle_len=10000,         # Maximum bundle length
+        min_intron_len=30            # Minimum intron length
+    threads: THREADS
+    log:
+        "logs/cufflinks/{samples}.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+
+        # Run Cufflinks assembly
+        cufflinks \
+            -o $workdir \
+            -p {threads} \
+            -u \
+            -I {params.max_intron_len} \
+            --max-bundle-length {params.max_bundle_len} \
+            --min-intron-length {params.min_intron_len} \
+            {WORKDIR}/{input.bam} \
+            2> {log}
+
+        # Move results to final location
+        mkdir -p {WORKDIR}/{output.directory}
+        mv $workdir/* {WORKDIR}/{output.directory}/
+        """
 
 #
 #
@@ -261,46 +436,105 @@ rule cufflinks:
 
 
 
+# RNA-seq Read Mapping with Segemehl
 rule segemehl:
-     input: reads="reads/{samples}.fastq",genome=ID+".fasta", idx=ID+".idx"
-     output: mapped="reads/{samples}.merged.sorted.sam", mappedCf="reads/{samples}.sam.cf"
-     params: cluster="-cwd -V"     
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     #map
-     segemehl.x -s -S -d {WORKDIR}/{input.genome} -i {WORKDIR}/{input.idx} -t {threads} -q {WORKDIR}/{input.reads} -u {COMPUTEDIR}/${{prefix}}/unmapped.sam > {COMPUTEDIR}/${{prefix}}/mapped.sam
-     #sort mapped reads
-     samtools view -bS {COMPUTEDIR}/${{prefix}}/mapped.sam | samtools sort - {COMPUTEDIR}/${{prefix}}/mapped.sorted
-     samtools view -h  {COMPUTEDIR}/${{prefix}}/mapped.sorted.bam > {COMPUTEDIR}/${{prefix}}/mapped.sorted.sam
-     #remap unmapped reads
-     lack.x -s -d {input.genome} -q {COMPUTEDIR}/${{prefix}}/mapped.sorted.sam -r {COMPUTEDIR}/${{prefix}}/unmapped.sam -o {COMPUTEDIR}/${{prefix}}/remapped.sam -t {threads}
-     #merge reads
-     samtools view -Sh {COMPUTEDIR}/${{prefix}}/remapped.sam > {COMPUTEDIR}/${{prefix}}/merged.sam
-     samtools view -S  {COMPUTEDIR}/${{prefix}}/mapped.sorted.sam >> {COMPUTEDIR}/${{prefix}}/merged.sam
-     #sort merged reads
-     samtools view -bS {COMPUTEDIR}/${{prefix}}/merged.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/merged.sorted
-     samtools view -h {COMPUTEDIR}/${{prefix}}/merged.sorted.bam > {COMPUTEDIR}/${{prefix}}/merged.sorted.sam
-     #produce cufflinks compatible sam file
-     s2c.py -s {COMPUTEDIR}/${{prefix}}/merged.sorted.sam -d {INTRON} | grep -vP "^SQ\s+" >  {COMPUTEDIR}/${{prefix}}/merged.cf.sam
-     samtools view -bS {COMPUTEDIR}/${{prefix}}/merged.cf.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/merged.sorted.cf
-     samtools view -h {COMPUTEDIR}/${{prefix}}/merged.sorted.cf.bam > {COMPUTEDIR}/${{prefix}}/merged.sorted.cf.sam
-     #mv results to final directory
-     mv {COMPUTEDIR}/${{prefix}}/merged.sorted.cf.sam {WORKDIR}/{output.mappedCf}
-     mv {COMPUTEDIR}/${{prefix}}/merged.sorted.sam {WORKDIR}/{output.mapped}
-     #clean up
-     rm -rf {COMPUTEDIR}/${{prefix}}
-     """
+    """
+    Map RNA-seq reads to the genome using segemehl.
+    Includes initial mapping, remapping of unmapped reads,
+    and conversion to Cufflinks-compatible format.
+    """
+    input:
+        reads="reads/{samples}.fastq",
+        genome=ID+".fasta",
+        idx=ID+".idx"
+    output:
+        mapped="reads/{samples}.merged.sorted.sam",
+        mappedCf="reads/{samples}.sam.cf"
+    params:
+        cluster="-cwd -V"
+    threads: THREADS
+    log:
+        "logs/segemehl/{samples}.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
 
+        # Initial read mapping
+        segemehl.x \
+            -s -S \
+            -d {WORKDIR}/{input.genome} \
+            -i {WORKDIR}/{input.idx} \
+            -t {threads} \
+            -q {WORKDIR}/{input.reads} \
+            -u $workdir/unmapped.sam \
+            > $workdir/mapped.sam \
+            2>> {log}
 
+        # Sort mapped reads
+        samtools view -bS $workdir/mapped.sam | \
+            samtools sort - $workdir/mapped.sorted
+        samtools view -h $workdir/mapped.sorted.bam \
+            > $workdir/mapped.sorted.sam
+
+        # Remap unmapped reads using lack
+        lack.x -s \
+            -d {input.genome} \
+            -q $workdir/mapped.sorted.sam \
+            -r $workdir/unmapped.sam \
+            -o $workdir/remapped.sam \
+            -t {threads} \
+            2>> {log}
+
+        # Merge mapped and remapped reads
+        samtools view -Sh $workdir/remapped.sam > $workdir/merged.sam
+        samtools view -S $workdir/mapped.sorted.sam >> $workdir/merged.sam
+
+        # Sort merged reads
+        samtools view -bS $workdir/merged.sam | \
+            samtools sort - $workdir/merged.sorted
+        samtools view -h $workdir/merged.sorted.bam \
+            > $workdir/merged.sorted.sam
+
+        # Convert to Cufflinks-compatible format
+        s2c.py -s $workdir/merged.sorted.sam -d {INTRON} | \
+            grep -vP "^SQ\\s+" > $workdir/merged.cf.sam
+
+        # Sort Cufflinks-compatible SAM
+        samtools view -bS $workdir/merged.cf.sam | \
+            samtools sort - $workdir/merged.sorted.cf
+        samtools view -h $workdir/merged.sorted.cf.bam \
+            > $workdir/merged.sorted.cf.sam
+
+        # Move results to final location
+        mv $workdir/merged.sorted.cf.sam {WORKDIR}/{output.mappedCf}
+        mv $workdir/merged.sorted.sam {WORKDIR}/{output.mapped}
+
+        # Cleanup
+        rm -rf $workdir
+        """
+
+# Generate Segemehl Index
 rule segemehlIdx:
-     input: genome=ID+".fasta"
-     output: idx=ID+".idx"
-     threads: 1
-     shell:"""
-     segemehl.x -s -d {input.genome} -x {output.idx}
-     """
+    """
+    Create the segemehl index for the reference genome.
+    """
+    input:
+        genome=ID+".fasta"
+    output:
+        idx=ID+".idx"
+    threads: 1
+    log:
+        "logs/segemehl/index.log"
+    shell:
+        """
+        segemehl.x -s \
+            -d {input.genome} \
+            -x {output.idx} \
+            2> {log}
+        """
 
 rule bamToFastq:
      input: expand("reads/{samples}.bam", samples=BAMS)
@@ -319,68 +553,160 @@ rule bamToFastq:
 #                               #
 #################################
 
+# Protein Mapping with Scipio
 rule scipio:
-     input: ID+".fasta"
-     output: ID+".scipio.gff"
-     params: cluster="-cwd -V"
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cat {UNIREF} | parallel -j {threads} -N20 --round-robin --pipe --recstart ">" "cat /dev/stdin > {COMPUTEDIR}/${{prefix}}/{{#}}; scipio.1.4.1.pl --min_score=0.3 --min_identity=60 --min_coverage=60 --max_mismatch=100 --multiple_results --blat_score=15 --blat_tilesize=7 --max_assemble_size={INTRON} --blat_params="-oneOff=1" --exhaust_align_size={INTRON} --exhaust_gap_size=30  --accepted_intron_penalty=1.0  --blat_output={COMPUTEDIR}/${{prefix}}/{{#}}.psl {WORKDIR}/{input} {COMPUTEDIR}/${{prefix}}/{{#}} --verbose  | yaml2gff.1.4.pl > {COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff &&  scipiogff2gff.pl --in={COMPUTEDIR}/${{prefix}}/{{#}}.yamlgff --out={COMPUTEDIR}/${{prefix}}/{{#}}.gff && cat {COMPUTEDIR}/${{prefix}}/*.gff" > {WORKDIR}/{output}
-     rm -rf {COMPUTEDIR}/{{$prefix}}
-     """
+    """
+    Map proteins to the genome using Scipio.
+    Processes protein sequences in parallel for efficiency.
+    """
+    input:
+        genome=ID+".fasta"
+    output:
+        gff=ID+".scipio.gff"
+    params:
+        cluster="-cwd -V",
+        min_score=0.3,           # Minimum alignment score
+        min_identity=60,         # Minimum sequence identity
+        min_coverage=60,         # Minimum query coverage
+        max_mismatch=100,        # Maximum mismatches allowed
+        blat_score=15,           # BLAT score threshold
+        blat_tilesize=7,         # BLAT tile size
+        exhaust_gap_size=30      # Size for exhaustive gap search
+    threads: THREADS
+    log:
+        "logs/scipio/mapping.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
 
-##################################
-##                               #
-##     CEGMA CORE PROTEIN MAPPING#
-##                               #
-##################################
-#
-#
+        # Process proteins in parallel
+        cat {UNIREF} | \
+        parallel -j {threads} -N20 --round-robin --pipe --recstart ">" \
+            "cat /dev/stdin > $workdir/{{#}}; \
+             scipio.1.4.1.pl \
+                --min_score={params.min_score} \
+                --min_identity={params.min_identity} \
+                --min_coverage={params.min_coverage} \
+                --max_mismatch={params.max_mismatch} \
+                --multiple_results \
+                --blat_score={params.blat_score} \
+                --blat_tilesize={params.blat_tilesize} \
+                --max_assemble_size={INTRON} \
+                --blat_params='-oneOff=1' \
+                --exhaust_align_size={INTRON} \
+                --exhaust_gap_size={params.exhaust_gap_size} \
+                --accepted_intron_penalty=1.0 \
+                --blat_output=$workdir/{{#}}.psl \
+                {WORKDIR}/{input.genome} \
+                $workdir/{{#}} \
+                --verbose | \
+             yaml2gff.1.4.pl > $workdir/{{#}}.yamlgff && \
+             scipiogff2gff.pl \
+                --in=$workdir/{{#}}.yamlgff \
+                --out=$workdir/{{#}}.gff && \
+             cat $workdir/{{#}}.gff" \
+        > {WORKDIR}/{output.gff} 2> {log}
 
+        # Cleanup
+        rm -rf $workdir
+        """
+
+# CEGMA Core Gene Mapping
 rule cegma:
-     input: ID+".fasta"
-     output: ID+".cegma.gff"
-     threads: THREADS
-     params: cluster="-cwd -V"     
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cd {COMPUTEDIR}/${{prefix}}
-     cegma -g {WORKDIR}/{input} --ext -v -T {threads}  --max_intron 2000
-     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-     rm -rf {COMPUTEDIR}/{{$prefix}}
-     """
-#
-#
-#
-##################################
-##                               #
-##     Ab-initio                 #
-##                               #
-##################################
-#
+    """
+    Map core eukaryotic genes using CEGMA.
+    Identifies conserved core genes in the genome.
+    """
+    input:
+        genome=ID+".fasta"
+    output:
+        gff=ID+".cegma.gff"
+    threads: THREADS
+    params:
+        cluster="-cwd -V",
+        max_intron=2000         # Maximum intron size
+    log:
+        "logs/cegma/mapping.log"
+    shell:
+        """
+        # Create unique working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
+
+        # Run CEGMA
+        cegma \
+            -g {WORKDIR}/{input.genome} \
+            --ext \
+            -v \
+            -T {threads} \
+            --max_intron {params.max_intron} \
+            2> {log}
+
+        # Move results to final location
+        mv $workdir {WORKDIR}/{output.gff}
+        """
+
+# Ab initio Gene Prediction with GeneMark-ES
 rule geneMarkEs:
-     input: ID+".fasta"
-     output: ID+".gM"
-     threads: THREADS
-     params: cluster="-cwd -V"     
-     shell:"""
-     gmes_petap.pl --fungus --ES --cores {threads} --sequence {input}
-     """
+    """
+    Perform ab initio gene prediction using GeneMark-ES.
+    Optimized for fungal genomes.
+    """
+    input:
+        genome=ID+".fasta"
+    output:
+        predictions=ID+".gM"
+    threads: THREADS
+    params:
+        cluster="-cwd -V"
+    log:
+        "logs/genemark/prediction.log"
+    shell:
+        """
+        gmes_petap.pl \
+            --fungus \
+            --ES \
+            --cores {threads} \
+            --sequence {input.genome} \
+            2> {log}
+        """
 
-
+# Clean Intermediate Files
 rule clean:
-     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
+    """
+    Remove all intermediate and temporary files.
+    """
+    shell:
+        "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain "
+        "*.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
 
-##Masking
+# Repeat Masking
 rule repeatMasker:
-     input: ID+".fasta"
-     output: ID+".fasta.masked"
-     threads: 16
-     params: cluster="-cwd -V"     
-     shell:"""
-            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-           """
+    """
+    Mask repetitive elements in the genome using RepeatMasker.
+    Optimized for fungal genomes.
+    """
+    input:
+        genome=ID+".fasta"
+    output:
+        masked=ID+".fasta.masked"
+    threads: 16
+    params:
+        cluster="-cwd -V"
+    log:
+        "logs/repeatmasker/masking.log"
+    shell:
+        """
+        RepeatMasker \
+            -qq \
+            -pa {threads} \
+            -species fungi \
+            {WORKDIR}/{input.genome} \
+            2> {log}
+        """
 

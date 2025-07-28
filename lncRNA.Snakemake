@@ -1,6 +1,26 @@
-#run snakemake
+
+# ===============================
+# lncRNA.Snakemake
+# ===============================
 #
-#snakemake -d `pwd` -s `pwd`/lncRNA.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+# Purpose: Identify and quantify long non-coding RNAs (lncRNAs) from transcriptome assemblies.
+#
+# Inputs:
+#   - Genome annotation (GFF/GTF)
+#   - Transcript assemblies (FASTA/GFF)
+#   - Protein databases
+#   - Mapped reads (SAM/BAM)
+#
+# Outputs:
+#   - lncRNA GFF files
+#   - Count tables
+#   - Differential expression results
+#
+# Usage:
+#   snakemake -d $(pwd) -s $(pwd)/lncRNA.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+# Author: htafer
+# Last Updated: 2025-07-28
+# ===============================
 
 ###############################
 ##### long non-coding RNA #####
@@ -28,40 +48,38 @@
 #featureCounts
 #diff.R
 
-#################################
-#                               #
-#      Variables setup          #
-#                               #
+# Configuration
 #################################
 
-    #################################
-    #ENVIRONMENT                    #
-    #################################
+# Environment setup
+configfile: "config.yaml"  # Optional: move parameters to config file
 
-#HOME=os.environ['HOME']
-WORKDIR="/media/ckustor/work/lncRNA/snakemaketest"
-#COMPUTEDIR=os.environ['GLOBAL']
+# Directories
+WORKDIR = config.get("workdir", "/media/ckustor/work/lncRNA/snakemaketest")
+LOGDIR = "logs"
 
-    #################################
-    #THREADS                        #
-    #################################
+# Computing resources
+THREADS = config.get("threads", 4)
+MAX_MEM = config.get("max_memory", "16G")
 
-THREADS=4
+# Project information
+ID = config.get("project_id", "claImm")
+GENOME = ID + ".fasta"
+ANNOT = ID + ".Annot.gff3"
 
-    ##################################
-    #FILES                           #
-    ##################################
+# Input files
+PASA = ID + ".pasa_assemblies.gff3"
+PASAFASTA = ID + ".assemblies.fasta"
 
+# Database paths
+BLAST = config.get("blast_db", "UniProt90pSaccharomyceta.fasta")
+PFAM = config.get("pfam_db", "/home/ckustor/bin/PfamScan/db/")
 
-ID="claImm"
-GENOME=ID+".fasta"
-ANNOT=ID+".Annot.gff3"
-
-PASA=ID+".pasa_assemblies.gff3"
-PASAFASTA=ID+".assemblies.fasta"
-
-BLAST="UniProt90pSaccharomyceta.fasta"
-PFAM="/home/ckustor/bin/PfamScan/db/"
+# Tool parameters
+BLAST_EVALUE = config.get("blast_evalue", 0.001)
+PFAM_EVALUE = config.get("pfam_evalue", 0.001)
+MIN_TRANSCRIPT_LENGTH = config.get("min_transcript_length", 1000)
+CPAT_PROB_CUTOFF = config.get("cpat_probability_cutoff", 0.01)
 
 SAMS=WORKDIR+"/DIFF/{SAMPLES}.sam"
 SAMPLES,=glob_wildcards(SAMS);
@@ -87,37 +105,72 @@ rule all:
 #################################################################################
 
 
-########################
-####     DIFF       ####
-########################
+# Differential Expression Analysis Rules
+#########################################
 
+# Rule: diff
+# Purpose: Perform differential expression analysis using limma
+# Input: Count matrix of lncRNA expression
+# Output: Differential expression results
 rule diff:
-     input: "DIFF/all.counts"
-     output: "DIFF/diff.ok"
-     params:
-     threads: THREADS
-     shell:"""
-     cd DIFF
-     Rscript {WORKDIR}/limma.R -c {WORKDIR}/{input}
-     touch {WORKDIR}/{output}
-     """
+    input: 
+        counts = "DIFF/all.counts"
+    output: 
+        done = "DIFF/diff.ok",
+        results = "DIFF/limma_results.txt"
+    params:
+        script = "limma.R"
+    threads: THREADS
+    log:
+        "logs/diff/limma.log"
+    shell:"""
+        (cd DIFF && \
+        Rscript {WORKDIR}/{params.script} \
+            --counts {WORKDIR}/{input.counts} \
+            --output {WORKDIR}/{output.results} && \
+        touch {WORKDIR}/{output.done}) 2> {log}
+        """
 
-
-########################
-####  COUNT READS   ####
-########################
-
+# Rule: countreads
+# Purpose: Count reads mapping to lncRNAs using featureCounts
+# Input: SAM files and lncRNA annotation
+# Output: Combined count matrix
 rule countreads:
-     input: sam=expand(WORKDIR+"/DIFF/{samples}.sam", samples=SAMPLES), annot=ID+".lncRNA.gff3"
-     output: "DIFF/all.counts"
-     params: 
-     threads: THREADS
-     shell: """
-     cd DIFF
-     cat {WORKDIR}/{input.annot} | sed -r 's/cDNA_match/exon/' | sed -r 's#ID=#gene_id "#' | sed -r 's/;.+/";/g' > lncRNA.gtf
-     featureCounts -s 1 -T {threads} -a lncRNA.gtf -o counts {input.sam}
-     cat counts | grep -vP "^#" | sed -r 's#{WORKDIR}/DIFF/##g' | cut -f 1,7- > {WORKDIR}/{output}
-     """
+    input: 
+        sam = expand(WORKDIR+"/DIFF/{samples}.sam", samples=SAMPLES),
+        annot = ID+".lncRNA.gff3"
+    output: 
+        counts = "DIFF/all.counts",
+        summary = "DIFF/all.counts.summary"
+    params:
+        stranded = 1,  # 0=unstranded, 1=stranded, 2=reversely stranded
+        feature_type = "exon",
+        gtf = "DIFF/lncRNA.gtf"
+    threads: THREADS
+    log:
+        "logs/countreads/featurecounts.log"
+    shell: """
+        (mkdir -p DIFF && \
+        # Convert GFF3 to GTF format
+        cat {WORKDIR}/{input.annot} | \
+            sed -r 's/cDNA_match/{params.feature_type}/' | \
+            sed -r 's#ID=#gene_id "#' | \
+            sed -r 's/;.+/";/g' > {params.gtf} && \
+        
+        # Count reads
+        featureCounts \
+            -s {params.stranded} \
+            -T {threads} \
+            -a {params.gtf} \
+            -o DIFF/counts \
+            {input.sam} && \
+        
+        # Format output
+        cat DIFF/counts | \
+            grep -vP "^#" | \
+            sed -r 's#{WORKDIR}/DIFF/##g' | \
+            cut -f 1,7- > {WORKDIR}/{output.counts}) 2> {log}
+        """
 
 
 #################################################################################
@@ -126,54 +179,121 @@ rule countreads:
 #                                                                               #
 #################################################################################
 
-########################
-####    lncRNA      ####
-########################
+# Database Search Rules
+###########################################
 
-rule lncRNA: ids="CPAT/cpat.results", blast="BLAST/blast.coding.candidates", pfam="PFAM/"+ID+".pfam.coding.candidates"
-     input: lnc=ID+"lncRNA.gff3"
-     output:
-     threads: THREADS
-     params:
-     shell:"""
-     cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | sort -u > coding.candidates
-     cut -f 1 {WORKDIR}/{input.ids}  > id.cpat.results
-     cat id.cpat.results | perl -lane 'my $count=`grep -cw $F[0] coding.candidates`; chomp($count); if($count==0){{print $F[0]}};' | sort -u  | fgrep -w -f {WORKDIR}/{PASA} > {WORKDIR}/{output.lnc}
-     """
+# Rule: lncRNA
+# Purpose: Identify lncRNAs by filtering out coding transcripts
+# Input: Results from CPAT, BLAST, and PFAM searches
+# Output: Final lncRNA annotation
+rule lncRNA:
+    input:
+        ids = "CPAT/cpat.results",
+        blast = "BLAST/blast.coding.candidates",
+        pfam = "PFAM/" + ID + ".pfam.coding.candidates",
+        pasa = PASA
+    output:
+        lnc = ID + "lncRNA.gff3",
+        stats = "lncRNA.stats"
+    threads: THREADS
+    log:
+        "logs/lncrna/filter.log"
+    shell:"""
+        (# Combine coding candidates from BLAST and PFAM
+        cat {WORKDIR}/{input.blast} {WORKDIR}/{input.pfam} | \
+            sort -u > coding.candidates
 
+        # Get CPAT results
+        cut -f 1 {WORKDIR}/{input.ids} > id.cpat.results
 
-########################
-####      BLAST     ####
-########################
+        # Filter for non-coding RNAs and create final annotation
+        cat id.cpat.results | \
+            perl -lane 'my $count=`grep -cw $F[0] coding.candidates`; \
+                       chomp($count); \
+                       if($count==0){{print $F[0]}};' | \
+            sort -u | \
+            fgrep -w -f - {WORKDIR}/{input.pasa} > {WORKDIR}/{output.lnc}
 
+        # Generate statistics
+        echo "Total transcripts processed: $(wc -l < id.cpat.results)" > {output.stats}
+        echo "Coding candidates (BLAST/PFAM): $(wc -l < coding.candidates)" >> {output.stats}
+        echo "Final lncRNA candidates: $(wc -l < {output.lnc})" >> {output.stats}) 2> {log}
+        """
+
+# Rule: blast
+# Purpose: Search for protein-coding potential using BLAST
+# Input: CPAT-filtered sequences
+# Output: List of potential coding transcripts
 rule blast:
-     input: cpat="CPAT/"+ID+".cpat.fasta"
-     output: blast="BLAST/blast.coding.candidates"
-     threads: THREADS
-     params:
-     shell:""" 
-     cd BLAST
-     formatdb -i {BLAST} -p T -n uniprot90S
-     blastx -query {WORKDIR}/{input.cpat} -db uniprot90S -num_threads {threads} -outfmt 7 -out blast.out
-     cat blast.out | perl -lane 'if($F[7]>$F[6] && $F[10]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}
-     """
+    input:
+        fasta = "CPAT/" + ID + ".cpat.fasta"
+    output:
+        blast = "BLAST/blast.coding.candidates",
+        db = directory("BLAST/db"),
+        raw = "BLAST/blast.out"
+    params:
+        evalue = BLAST_EVALUE,
+        db_name = "uniprot90S"
+    threads: THREADS
+    log:
+        "logs/blast/search.log"
+    shell:""" 
+        (mkdir -p {output.db} BLAST && \
+        cd BLAST
+        
+        # Format BLAST database
+        formatdb -i {BLAST} -p T -n db/{params.db_name} && \
+        
+        # Run BLAST search
+        blastx \
+            -query {WORKDIR}/{input.fasta} \
+            -db db/{params.db_name} \
+            -num_threads {threads} \
+            -outfmt 7 \
+            -evalue {params.evalue} \
+            -out {WORKDIR}/{output.raw} && \
+        
+        # Filter results
+        cat {WORKDIR}/{output.raw} | \
+            perl -lane 'if($F[7]>$F[6] && $F[10]<{params.evalue}){{print;}}' | \
+            cut -f 1 | sort -u | \
+            sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.blast}) 2> {log}
+        """
 
-
-########################
-####     PFAM       ####
-########################
-
+# Rule: pfam
+# Purpose: Search for protein domains using PFAM
+# Input: CPAT-filtered sequences
+# Output: List of transcripts with protein domains
 rule pfam:
-     input: "/CPAT/"+ID+".cpat.fasta"
-     output: "PFAM/"+ID+".pfam.coding.candidates"
-     params:
-     threads: THREADS
-     shell: """
-     mkdir PFAM
-     cd PFAM
-     pfam_scan.pl -fasta {WORKDIR}/{input} -dir {PFAM} -cpu {threads} -outfile pfam.out
-     cat pfam.out | grep -v '#' | perl -lane 'if($F[2]>$F[1] && $F[12]<0.001){{print;}}' | cut -f 1 | sort -u | sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output}
-     """
+    input:
+        fasta = "CPAT/" + ID + ".cpat.fasta"
+    output:
+        pfam = "PFAM/" + ID + ".pfam.coding.candidates",
+        raw = "PFAM/pfam.out"
+    params:
+        evalue = PFAM_EVALUE,
+        db_dir = PFAM
+    threads: THREADS
+    log:
+        "logs/pfam/search.log"
+    shell: """
+        (mkdir -p PFAM && \
+        cd PFAM && \
+        
+        # Run PFAM search
+        pfam_scan.pl \
+            -fasta {WORKDIR}/{input.fasta} \
+            -dir {params.db_dir} \
+            -cpu {threads} \
+            -outfile {WORKDIR}/{output.raw} && \
+        
+        # Filter results
+        cat {WORKDIR}/{output.raw} | \
+            grep -v '#' | \
+            perl -lane 'if($F[2]>$F[1] && $F[12]<{params.evalue}){{print;}}' | \
+            cut -f 1 | sort -u | \
+            sed -r 's/asmbl/>asmbl/' > {WORKDIR}/{output.pfam}) 2> {log}
+        """
 
 
 #################################################################################
@@ -182,32 +302,112 @@ rule pfam:
 #                                                                               #
 #################################################################################
 
-rule cpat:
-     input: gene="noOverlap.fasta", fa="assemblies.fa", nonc="nonconding.fasta", coding="codingseq.fasta" 
-     output: fasta="CPAT/"+ID+".cpat.fasta", results="CPAT/cpat.results"
-     params:
-     threads: THREADS
-     shell:"""
-     mkdir -p CPAT
-     cd CPAT
-     make_hexamer_tab.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} > hexamer.tab
-     make_logitModel.py -c {WORKDIR}/{input.coding} -n {WORKDIR}/{input.nonc} -x hexamer.tab -o {ID}
-     cpat.py -d {ID}.logit.RData -x hexamer.tab -g {WORKDIR}/{input.gene} -o {ID}.cpat
-     cat {ID}.cpat |  perl -lane 'if($F[1]>=1000 && $F[5]<0.01){{print;}}' | sort -k 2,2gr | sed -r 's/ASMBL/asmbl/' > {WORKDIR}/{output.results}
-     parallel -j {threads} 'grep -P "{{}}$" {WORKDIR}/{input.fa} -A 1 ' ::: `cat {WORKDIR}/{output.results}  | cut -f 1` > {WORKDIR}/{output.fasta}
-     """
+# CPAT Analysis Rules
+###########################################
 
+# Rule: cpat
+# Purpose: Run Coding Potential Assessment Tool (CPAT) to identify coding potential
+# Input: Various sequence files for training and prediction
+# Output: CPAT results and filtered sequences
+rule cpat:
+    input:
+        gene = "noOverlap.fasta",
+        fa = "assemblies.fa",
+        nonc = "nonconding.fasta",
+        coding = "codingseq.fasta"
+    output:
+        fasta = "CPAT/" + ID + ".cpat.fasta",
+        results = "CPAT/cpat.results",
+        hexamer = "CPAT/hexamer.tab",
+        model = "CPAT/" + ID + ".logit.RData"
+    params:
+        min_length = MIN_TRANSCRIPT_LENGTH,
+        prob_cutoff = CPAT_PROB_CUTOFF
+    threads: THREADS
+    log:
+        "logs/cpat/analysis.log"
+    shell:"""
+        (mkdir -p CPAT && \
+        cd CPAT && \
+        
+        # Generate hexamer frequency table
+        make_hexamer_tab.py \
+            -c {WORKDIR}/{input.coding} \
+            -n {WORKDIR}/{input.nonc} > {WORKDIR}/{output.hexamer} && \
+        
+        # Build logistic regression model
+        make_logitModel.py \
+            -c {WORKDIR}/{input.coding} \
+            -n {WORKDIR}/{input.nonc} \
+            -x {WORKDIR}/{output.hexamer} \
+            -o {ID} && \
+        
+        # Run CPAT prediction
+        cpat.py \
+            -d {WORKDIR}/{output.model} \
+            -x {WORKDIR}/{output.hexamer} \
+            -g {WORKDIR}/{input.gene} \
+            -o {ID}.cpat && \
+        
+        # Filter results by length and coding probability
+        cat {ID}.cpat | \
+            perl -lane 'if($F[1]>={params.min_length} && \
+                          $F[5]<{params.prob_cutoff}){{print;}}' | \
+            sort -k 2,2gr | \
+            sed -r 's/ASMBL/asmbl/' > {WORKDIR}/{output.results} && \
+        
+        # Extract sequences for filtered transcripts
+        parallel -j {threads} \
+            'grep -P "{{}}$" {WORKDIR}/{input.fa} -A 1' \
+            ::: $(cat {WORKDIR}/{output.results} | cut -f 1) \
+            > {WORKDIR}/{output.fasta}) 2> {log}
+        """
+
+# Rule: preparefiles
+# Purpose: Prepare input files for CPAT analysis
+# Input: Assemblies and intron annotations
+# Output: Coding and non-coding sequence files
 rule preparefiles:
-     input: fa="assemblies.fa", intron=ID+"introns.gff"
-     output: coding="codingseq.fasta", nonc="nonconding.fasta"
-     params:
-     threads: THREADS
-     shell:"""
-     getAnnoFasta.pl {ANNOT} --seqfile {GENOME}
-     cat {ID}.Annot3.cdsexons | sed -r 's/.cds[0-9]//g' | perl -lane 'BEGIN{{my $previousId="";}} if($F[0]=~/>/){{if($F[0] eq $previousId){{next;}}else{{$previousId=$F[0]; print "\n",$F[0]}}}}else{{printf $F[0]}}' > {output.coding}
-     cat {input.intron} | sed -r 's/;src=E//g' > introns.gff
-     parallel -j {threads} 'grep -P "{{}}$" assemblies.fa -A 1 ' ::: `cat introns.gff | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.nonc}
-     """
+    input:
+        fa = "assemblies.fa",
+        intron = ID + "introns.gff",
+        genome = GENOME,
+        annot = ANNOT
+    output:
+        coding = "codingseq.fasta",
+        nonc = "nonconding.fasta",
+        cdsexons = temp(ID + ".Annot3.cdsexons")
+    params:
+        cleanup_pattern = ".cds[0-9]"
+    threads: THREADS
+    log:
+        "logs/preparefiles/prepare.log"
+    shell:"""
+        (# Extract CDS sequences
+        getAnnoFasta.pl {input.annot} --seqfile {input.genome} && \
+        
+        # Process coding sequences
+        cat {output.cdsexons} | \
+            sed -r 's/{params.cleanup_pattern}//g' | \
+            perl -lane 'BEGIN{{my $previousId="";}} \
+                       if($F[0]=~/>/){{ \
+                           if($F[0] eq $previousId){{next;}} \
+                           else{{$previousId=$F[0]; print "\n",$F[0]}}\
+                       }}else{{printf $F[0]}}' \
+            > {output.coding} && \
+        
+        # Process non-coding sequences
+        cat {input.intron} | \
+            sed -r 's/;src=E//g' > introns.gff && \
+        
+        parallel -j {threads} \
+            'grep -P "{{}}$" {input.fa} -A 1' \
+            ::: $(cat introns.gff | \
+                  cut -f 9 | \
+                  sed -r 's/.+Target=([^$]+)/\\1/' | \
+                  sort -u) \
+            > {output.nonc}) 2> {log}
+        """
 
 #################################################################################
 #                                                                               #
@@ -216,22 +416,85 @@ rule preparefiles:
 #################################################################################
 
 
+# Genome Intersection Rules
+###########################################
+
+# Rule: intersect
+# Purpose: Find non-overlapping regions between transcripts and annotations
+# Input: TransDecoder predictions and PASA assemblies
+# Output: Non-overlapping transcripts and processed assemblies
 rule intersect:
-     input: ID+".assemblies.fasta.transdecoder.genome.gff3" 
-     output: fasta="noOverlap.fasta", fa="assemblies.fa"
-     params:
-     threads: THREADS
-     shell:"""
-     perl ./mergealign.pl < {PASA} > merged.gff
-     cat  merged.gff | cut -f 1-9 > {ID}.pasa_assemblies.mergedCoordinates.gff3
-     intersectBed -v -s -a {ID}.pasa_assemblies.mergedCoordinates.gff3 -b {ANNOT} > no.gff3
-     intersectBed -v -s -a no.gff3 -b {input} > noOverlap.gff
-     perl ~/bin/rmenterdb.pl < {PASAFASTA} > {output.fa} 
-     parallel -j {threads} 'grep -P "{{}}$" assemblies.fa -A 1 ' ::: `cat noOverlap.gff | cut -f 9 | sed -r 's/.+Target=([^$]+)/\\1/' | sort -u` > {output.fasta}
-     """
+    input:
+        transdecoder = ID + ".assemblies.fasta.transdecoder.genome.gff3",
+        pasa = PASA,
+        pasa_fasta = PASAFASTA,
+        annot = ANNOT
+    output:
+        fasta = "noOverlap.fasta",
+        fa = "assemblies.fa",
+        merged_coords = ID + ".pasa_assemblies.mergedCoordinates.gff3",
+        no_overlap = "noOverlap.gff"
+    params:
+        merge_script = "./mergealign.pl",
+        rm_enter_script = "~/bin/rmenterdb.pl"
+    threads: THREADS
+    log:
+        "logs/intersect/process.log"
+    shell:"""
+        (# Merge PASA alignments
+        perl {params.merge_script} < {input.pasa} > merged.gff && \
+        
+        # Extract coordinates
+        cat merged.gff | \
+            cut -f 1-9 > {output.merged_coords} && \
+        
+        # Find non-overlapping regions with annotations
+        intersectBed -v -s \
+            -a {output.merged_coords} \
+            -b {input.annot} > no.gff3 && \
+        
+        # Find non-overlapping regions with TransDecoder predictions
+        intersectBed -v -s \
+            -a no.gff3 \
+            -b {input.transdecoder} > {output.no_overlap} && \
+        
+        # Process PASA assemblies
+        perl {params.rm_enter_script} < {input.pasa_fasta} > {output.fa} && \
+        
+        # Extract sequences for non-overlapping regions
+        parallel -j {threads} \
+            'grep -P "{{}}$" {output.fa} -A 1' \
+            ::: $(cat {output.no_overlap} | \
+                  cut -f 9 | \
+                  sed -r 's/.+Target=([^$]+)/\\1/' | \
+                  sort -u) \
+            > {output.fasta}) 2> {log}
+        """
 
-
-
-#rule clean:
-#     shell: " "
+# Rule: clean
+# Purpose: Remove intermediate files and logs
+rule clean:
+    params:
+        patterns = [
+            "*.cpat",           # CPAT output files
+            "*.out",           # Various output files
+            "*.tab",           # Tab-delimited files
+            "BLAST",          # BLAST directory
+            "PFAM",           # PFAM directory
+            "CPAT",           # CPAT directory
+            "DIFF",           # Differential expression directory
+            "logs",           # Log directory
+            "*.gff3",         # GFF3 files
+            "*.gtf",          # GTF files
+            "*.fasta",        # FASTA files
+            "*.fa",           # FASTA files
+            "*.counts",       # Count files
+            "*.candidates",   # Candidate files
+            "*.results"       # Results files
+        ]
+    log:
+        "logs/clean.log"
+    shell: """
+        rm -rf {params.patterns} 2> {log}
+        """
 

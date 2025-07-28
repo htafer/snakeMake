@@ -1,6 +1,59 @@
-#run snakemake                                                                                                                                                                                                  
+# =====================================
+# multipleGenomeAlignments.Snakemake
+# =====================================
 #
-#snakemake -d `pwd` -s `pwd`/multipleGenomeAlignments.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+# Purpose:
+#   This Snakemake workflow performs whole-genome alignments between multiple
+#   species using a combination of tools from the UCSC Genome Browser toolkit.
+#   It includes steps for repeat masking, pairwise alignment, chaining,
+#   netting, and multiple alignment construction.
+#
+# Workflow Steps:
+#   1. Repeat masking using RepeatMasker
+#   2. Splitting genomes into chromosomes
+#   3. Pairwise alignments using LASTZ
+#   4. Converting alignments to PSL format
+#   5. Chaining alignments
+#   6. Creating alignment nets
+#   7. Converting to MAF format
+#   8. Multiple alignment using ROAST
+#
+# Input Requirements:
+#   - Reference genome FASTA file (specified by REFGENOME)
+#   - Query genome FASTA files (specified in IDS)
+#   - Tree file in Newick format (specified by TREE)
+#   - Working directory path (WORKDIR)
+#   - Computation directory path (COMPUTEDIR)
+#
+# Output Files:
+#   - Masked genome files (*.masked)
+#   - Pairwise alignments (*.lastz)
+#   - Chain files (*.chain)
+#   - Net files (*.net)
+#   - MAF files (*.maf)
+#   - Final multiple alignment (roaster.maf)
+#
+# Dependencies:
+#   - RepeatMasker
+#   - LASTZ
+#   - Kent tools (axtChain, chainNet, etc.)
+#   - GNU Parallel
+#   - ROAST
+#
+# Usage:
+#   snakemake -s multipleGenomeAlignments.Snakemake --cores [N]
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+#
+# =====================================
+#   - Alignment files (MAF, GFF)
+#   - Summary statistics
+#
+# Usage:
+#   snakemake -d $(pwd) -s $(pwd)/multipleGenomeAlignments.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+#
+# ===============================
 #look at https://www.mail-archive.com/bioinfo-general-nci@list.nih.gov/msg00018.html
 #Check parallell environment on cluster.
 
@@ -84,134 +137,329 @@ rule splitAlignmentsRandom:
      """
 
 
-#ROASTING
+## Multiple Alignment Rules ##
+# Rule: roasting
+# Purpose: Combines multiple pair-wise alignments into a multiple alignment using ROAST
+# Input: Individual MAF files from pairwise alignments
+# Output: A single MAF file containing the multiple alignment
 rule roasting:
-     input: expand(REFGENOME+".{id}.sing.maf", id=IDS)
-     output: "roaster.maf"
-     params: cluster="-cwd -V"
-     shell:"""
-           roast T={COMPUTEDIR}/ E={REFGENOME} \"{TREE}\" {input} {COMPUTEDIR}/{output}
-           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
-           """
+    input: 
+        mafs = expand(REFGENOME+".{id}.sing.maf", id=IDS)
+    output: 
+        maf = "roaster.maf"
+    params: 
+        cluster="-cwd -V"
+    log:
+        "logs/roasting/roast.log"
+    shell:"""
+        (roast T={COMPUTEDIR}/ E={REFGENOME} \"{TREE}\" {input.mafs} {COMPUTEDIR}/{output.maf} && \
+        mv {COMPUTEDIR}/{output.maf} {WORKDIR}/{output.maf}) 2> {log}
+        """
 
 
-#MAFFING
+# Rule: netMaf
+# Purpose: Converts network and chain files to MAF format through AXT intermediate
+# Input: Network, chain, and genome files
+# Output: MAF format alignment file
 rule netMaf:
-     input: "{id}.fna.split.net","{id}.fna.split.preChain","{id}.fna.split","{id}.fna.sizes",REFGENOME+".ref"
-     output: "{REFGENOME}.{id}.sing.maf"
-     params: cluster="-cwd -V"
-     shell: """
-            netToAxt {input[0]} {input[1]} {input[4]}.split/ {input[2]}/ stdout  | axtSort stdin stdout | axtToMaf stdin {input[4]}.sizes {input[3]} {COMPUTEDIR}/{output} -tPrefix={input[4]}. -qPrefix=`echo {input[3]} | sed -r 's/.fna.+/./'`;
-            mv {COMPUTEDIR}/{output}  {WORKDIR}/{output}
-            """
+    input:
+        net = "{id}.fna.split.net",
+        chain = "{id}.fna.split.preChain",
+        split = "{id}.fna.split",
+        sizes = "{id}.fna.sizes",
+        ref = REFGENOME+".ref"
+    output:
+        maf = "{REFGENOME}.{id}.sing.maf"
+    params:
+        cluster="-cwd -V"
+    log:
+        "logs/netmaf/{id}.log"
+    shell: """
+        (netToAxt {input.net} {input.chain} {input.ref}.split/ {input.split}/ stdout | \
+        axtSort stdin stdout | \
+        axtToMaf stdin {input.ref}.sizes {input.sizes} {COMPUTEDIR}/{output.maf} \
+            -tPrefix={input.ref}. \
+            -qPrefix=`echo {input.sizes} | sed -r 's/.fna.+/./'` && \
+        mv {COMPUTEDIR}/{output.maf} {WORKDIR}/{output.maf}) 2> {log}
+        """
 
-#NETTING
+# Rule: chainNet
+# Purpose: Creates alignment nets from chains, filtering for synteny
+# Input: Pre-chain file and genome sizes
+# Output: Network format alignment file
 rule chainNet:
-     input: "{id}.fna.split.preChain","{id}.fna.sizes",REFGENOME+".ref.sizes"
-     output: "{id}.fna.split.net"
-     params: cluster="-cwd -V"
-     shell:"""
-           chainNet {WORKDIR}/{input[0]} -minSpace=1 {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} stdout /dev/null | netSyntenic stdin {COMPUTEDIR}/{output}
-           mv {COMPUTEDIR}/{output} {WORKDIR}/{output}
-           """
+    input:
+        prechain = "{id}.fna.split.preChain",
+        query_sizes = "{id}.fna.sizes",
+        target_sizes = REFGENOME+".ref.sizes"
+    output:
+        net = "{id}.fna.split.net"
+    params:
+        cluster="-cwd -V",
+        min_space = 1  # Minimum space between alignment blocks
+    log:
+        "logs/chainnet/{id}.log"
+    shell:"""
+        (chainNet {WORKDIR}/{input.prechain} \
+            -minSpace={params.min_space} \
+            {WORKDIR}/{input.target_sizes} \
+            {WORKDIR}/{input.query_sizes} \
+            stdout /dev/null | \
+        netSyntenic stdin {COMPUTEDIR}/{output.net} && \
+        mv {COMPUTEDIR}/{output.net} {WORKDIR}/{output.net}) 2> {log}
+        """
 
-#Chaining
+## Chaining Rules ##
+# Rule: allChain
+# Purpose: Merges and sorts alignment chains, then prepares them for netting
+# Input: AXT format alignments and genome sizes
+# Output: Sorted chain file and preprocessed chain file for netting
 rule allChain:
-     input: "{id}.fna.split.axt", "{id}.fna.sizes",REFGENOME+".ref.sizes"
-     output: "{id}.fna.split.chain","{id}.fna.split.preChain"
-     params: cluster="-cwd -V"
-     shell:"""
-           chainMergeSort {WORKDIR}/{input[0]}/* > {COMPUTEDIR}/{output[0]}
-           chainPreNet {COMPUTEDIR}/{output[0]} {WORKDIR}/{input[2]} {WORKDIR}/{input[1]} {COMPUTEDIR}/{output[1]}
-           mv {COMPUTEDIR}/{output[0]} {WORKDIR}/{output[0]}
-           mv {COMPUTEDIR}/{output[1]} {WORKDIR}/{output[1]}
-           """
+    input:
+        axt = "{id}.fna.split.axt",
+        query_sizes = "{id}.fna.sizes",
+        target_sizes = REFGENOME+".ref.sizes"
+    output:
+        chain = "{id}.fna.split.chain",
+        prechain = "{id}.fna.split.preChain"
+    params:
+        cluster="-cwd -V"
+    log:
+        "logs/allchain/{id}.log"
+    shell:"""
+        (chainMergeSort {WORKDIR}/{input.axt}/* > {COMPUTEDIR}/{output.chain} && \
+        chainPreNet {COMPUTEDIR}/{output.chain} \
+            {WORKDIR}/{input.target_sizes} \
+            {WORKDIR}/{input.query_sizes} \
+            {COMPUTEDIR}/{output.prechain} && \
+        mv {COMPUTEDIR}/{output.chain} {WORKDIR}/{output.chain} && \
+        mv {COMPUTEDIR}/{output.prechain} {WORKDIR}/{output.prechain}) 2> {log}
+        """
 
+# Rule: axtChain
+# Purpose: Creates alignment chains from PSL files using parallel processing
+# Input: PSL alignments and split genome files
+# Output: Directory of AXT format alignment chains
 rule axtChain:
-     input: "{id}.fna.split.psl",REFGENOME+".ref.split","{id}.fna.split"
-     output: "{id}.fna.split.axt"
-     params: cluster="-cwd -V"
-     shell:"""
-           prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-           mkdir -p {COMPUTEDIR}/${{prefix}}
-           parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files axtChain {{}} {WORKDIR}/{input[1]} {WORKDIR}/{input[2]}  stdout -linearGap=loose -psl ::: {WORKDIR}/{input[0]}/*
-           mv  {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-           """
-#LASTZ
+    input:
+        psl = "{id}.fna.split.psl",
+        target_split = REFGENOME+".ref.split",
+        query_split = "{id}.fna.split"
+    output:
+        axt = directory("{id}.fna.split.axt")
+    params:
+        cluster="-cwd -V",
+        threads = 16,
+        gap_model = "loose"  # Gap scoring model for alignment chains
+    log:
+        "logs/axtchain/{id}.log"
+    shell:"""
+        (prefix=`date --rfc-3339=ns | md5sum | head -c 16` && \
+        mkdir -p {COMPUTEDIR}/${{prefix}} && \
+        parallel -j {params.threads} \
+            --tmpdir {COMPUTEDIR}/${{prefix}} \
+            --files \
+            axtChain {{}} \
+            {WORKDIR}/{input.target_split} \
+            {WORKDIR}/{input.query_split} \
+            stdout \
+            -linearGap={params.gap_model} \
+            -psl \
+            ::: {WORKDIR}/{input.psl}/* && \
+        mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.axt}) 2> {log}
+        """
+## Alignment Format Conversion Rules ##
+# Rule: lavtopsl
+# Purpose: Converts LASTZ LAV output to PSL format using parallel processing
+# Input: Directory of LAV files from LASTZ
+# Output: Directory of PSL format alignments
 rule lavtopsl:
-      input: "{id}.fna.split.lastz"
-      output: "{id}.fna.split.psl"
-      params: cluster="-cwd -V"
-      shell:  """
-              prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-              mkdir -p {COMPUTEDIR}/${{prefix}}
-              parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lavToPsl {{}} stdout ::: {WORKDIR}/{input}/*
-              mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output}
-              """
+    input:
+        lav = "{id}.fna.split.lastz"
+    output:
+        psl = directory("{id}.fna.split.psl")
+    params:
+        cluster="-cwd -V",
+        threads = 16
+    log:
+        "logs/lavtopsl/{id}.log"
+    shell: """
+        (prefix=`date --rfc-3339=ns | md5sum | head -c 16` && \
+        mkdir -p {COMPUTEDIR}/${{prefix}} && \
+        parallel -j {params.threads} \
+            --tmpdir {COMPUTEDIR}/${{prefix}} \
+            --files \
+            lavToPsl {{}} stdout \
+            ::: {WORKDIR}/{input.lav}/* && \
+        mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.psl}) 2> {log}
+        """
 
+# Rule: lastz
+# Purpose: Performs pairwise genome alignments using LASTZ in parallel
+# Input: Split genome files for target and query
+# Output: Directory of LAV format alignments
 rule lastz:
-     input: REFGENOME+".ref.split","{id}.fna.split"
-     output: "{id}.fna.split.lastz"
-     params: cluster="-cwd -V"
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     parallel -j 16 --tmpdir {COMPUTEDIR}/${{prefix}} --files lastz ::: {WORKDIR}/{input[0]}/* ::: {WORKDIR}/{input[1]}/*
-     mv {COMPUTEDIR}/${{prefix}} {output}
-
-     """
+    input:
+        target = REFGENOME+".ref.split",
+        query = "{id}.fna.split"
+    output:
+        lastz = directory("{id}.fna.split.lastz")
+    params:
+        cluster="-cwd -V",
+        threads = 16
+    log:
+        "logs/lastz/{id}.log"
+    shell:"""
+        (prefix=`date --rfc-3339=ns | md5sum | head -c 16` && \
+        mkdir -p {COMPUTEDIR}/${{prefix}} && \
+        parallel -j {params.threads} \
+            --tmpdir {COMPUTEDIR}/${{prefix}} \
+            --files \
+            lastz {{1}} {{2}} \
+            ::: {WORKDIR}/{input.target}/* \
+            ::: {WORKDIR}/{input.query}/* && \
+        mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.lastz}) 2> {log}
+        """
+## Genome Processing Rules ##
+# Rule: splitFileREF
+# Purpose: Splits reference genome into individual chromosomes and converts to NIB format
+# Input: Masked reference genome file
+# Output: Directory of NIB format chromosome files
 rule splitFileREF:
-     input: REFGENOME+".ref.masked"
-     output: REFGENOME+".ref.split"
-     shell:"""
-           mkdir {output};
-           faSplit byName {input} {WORKDIR}/{output}/
-           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
-           rm {WORKDIR}/{output}/*.fa
-           """
+    input:
+        ref = REFGENOME+".ref.masked"
+    output:
+        split = directory(REFGENOME+".ref.split")
+    log:
+        "logs/splitfile/ref_split.log"
+    shell:"""
+        (mkdir -p {WORKDIR}/{output.split} && \
+        faSplit byName {WORKDIR}/{input.ref} {WORKDIR}/{output.split}/ && \
+        for i in {WORKDIR}/{output.split}/*.fa; do \
+            faToNib $i `echo $i | sed -e s/.fa/.nib/`; \
+        done && \
+        rm {WORKDIR}/{output.split}/*.fa) 2> {log}
+        """
 
+# Rule: splitFile
+# Purpose: Splits query genome into individual chromosomes and converts to NIB format
+# Input: Masked query genome file
+# Output: Directory of NIB format chromosome files
 rule splitFile:
-     input: "{id}.fna.masked"
-     output: "{id}.fna.split"
-     shell:"""
-           mkdir {output};
-           faSplit byName {input} {WORKDIR}/{output}/
-           for i in {WORKDIR}/{output}/*.fa; do faToNib $i `echo $i | sed -e s/.fa/.nib/`; done
-           rm {WORKDIR}/{output}/*.fa
-           """
+    input:
+        genome = "{id}.fna.masked"
+    output:
+        split = directory("{id}.fna.split")
+    log:
+        "logs/splitfile/{id}_split.log"
+    shell:"""
+        (mkdir -p {WORKDIR}/{output.split} && \
+        faSplit byName {WORKDIR}/{input.genome} {WORKDIR}/{output.split}/ && \
+        for i in {WORKDIR}/{output.split}/*.fa; do \
+            faToNib $i `echo $i | sed -e s/.fa/.nib/`; \
+        done && \
+        rm {WORKDIR}/{output.split}/*.fa) 2> {log}
+        """
 
-#Masking
+## Repeat Masking Rules ##
+# Rule: repeatMaskerREF
+# Purpose: Masks repetitive sequences in reference genome using RepeatMasker
+# Input: Reference genome FASTA file
+# Output: Masked reference genome
 rule repeatMaskerREF:
-     input: REFGENOME+".ref"
-     output: REFGENOME+".ref.masked"
-     threads: 16
-     params: cluster="-cwd -V"
-     shell:"""
-            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-           """
+    input:
+        ref = REFGENOME+".ref"
+    output:
+        masked = REFGENOME+".ref.masked"
+    threads: 16
+    params:
+        cluster="-cwd -V",
+        species = "fungi",  # Specify taxonomic group for repeat library
+        quiet = "-qq"  # Run in quiet mode
+    log:
+        "logs/masking/ref_masking.log"
+    shell:"""
+        (RepeatMasker {params.quiet} \
+            -pa {threads} \
+            -species {params.species} \
+            {WORKDIR}/{input.ref}) 2> {log}
+        """
 
+# Rule: repeatMasker
+# Purpose: Masks repetitive sequences in query genome using RepeatMasker
+# Input: Query genome FASTA file
+# Output: Masked query genome
 rule repeatMasker:
-     input: "{id}.fna"
-     output: "{id}.fna.masked"
-     threads: 16
-     params: cluster="-cwd -V"
-     shell:"""
-            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-           """
-#commodity
+    input:
+        genome = "{id}.fna"
+    output:
+        masked = "{id}.fna.masked"
+    threads: 16
+    params:
+        cluster="-cwd -V",
+        species = "fungi",  # Specify taxonomic group for repeat library
+        quiet = "-qq"  # Run in quiet mode
+    log:
+        "logs/masking/{id}_masking.log"
+    shell:"""
+        (RepeatMasker {params.quiet} \
+            -pa {threads} \
+            -species {params.species} \
+            {WORKDIR}/{input.genome}) 2> {log}
+        """
+## Utility Rules ##
+# Rule: genomeSizeREF
+# Purpose: Calculates detailed size statistics for reference genome
+# Input: Reference genome FASTA file
+# Output: File containing chromosome sizes
 rule genomeSizeREF:
-     input: REFGENOME+".ref"
-     output: REFGENOME+".ref.sizes"
-     shell:"""
-           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
-           """
+    input:
+        ref = REFGENOME+".ref"
+    output:
+        sizes = REFGENOME+".ref.sizes"
+    log:
+        "logs/commodity/ref_size.log"
+    shell:"""
+        (faSize {WORKDIR}/{input.ref} -detailed > {WORKDIR}/{output.sizes}) 2> {log}
+        """
+
+# Rule: genomeSize
+# Purpose: Calculates detailed size statistics for query genome
+# Input: Query genome FASTA file
+# Output: File containing chromosome sizes
 rule genomeSize:
-     input:"{id}.fna"
-     output:"{id}.fna.sizes"
-     shell:"""
-           faSize {WORKDIR}/{input} -detailed > {WORKDIR}/{output}
-           """
-#Cleaning
+    input:
+        genome = "{id}.fna"
+    output:
+        sizes = "{id}.fna.sizes"
+    log:
+        "logs/commodity/{id}_size.log"
+    shell:"""
+        (faSize {WORKDIR}/{input.genome} -detailed > {WORKDIR}/{output.sizes}) 2> {log}
+        """
+
+## Cleanup Rule ##
+# Rule: clean
+# Purpose: Removes all intermediate and output files from the workflow
 rule clean:
-     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat"
+    params:
+        patterns = [
+            "*.sizes",    # Genome size files
+            "*.masked",   # Masked genome files
+            "*.split",    # Split genome directories
+            "*.lastz",    # LASTZ alignment files
+            "*.psl",      # PSL format alignments
+            "*.chain",    # Chain format alignments
+            "*.preChain", # Pre-processed chain files
+            "*.net",      # Network format alignments
+            "*.maf",      # MAF format alignments
+            "*.axt",      # AXT format alignments
+            "*.sh.*",     # Shell script logs
+            "*.out",      # Output files
+            "*.tbl",      # Table files
+            "*.cat",      # Concatenated files
+            "logs"        # Log directory
+        ]
+    shell: 
+        "rm -rf {params.patterns}"
 

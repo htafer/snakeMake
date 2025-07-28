@@ -1,192 +1,278 @@
-#run snakemake
-#
-#snakemake -d `pwd` -s `pwd`/genomeAnnotationDN.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+"""
+De Novo Genome Annotation Pipeline (DN)
+-------------------------------------
+This Snakemake workflow performs comprehensive de novo genome annotation combining:
+1. RNA-based evidence
+2. Protein evidence mapping (Scipio)
+3. Multiple ab initio gene predictors:
+   - GeneMark-ES
+   - SNAP
+   - AUGUSTUS
+   - GlimmerHMM
+4. Evidence Modeler (EVM) for consensus predictions
+5. Non-coding RNA annotation:
+   - tRNAscan-SE
+   - Rfam
+   - RNAmmer
 
-#################################
-#                               #
-#     Import modules            #
-#                               #
-#################################
+Usage:
+    snakemake -d `pwd` -s `pwd`/genomeAnnotationDN.Snakemake \
+        --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+
+Requirements:
+- SNAP
+- AUGUSTUS
+- GeneMark-ES
+- GlimmerHMM
+- Evidence Modeler (EVM)
+- Scipio
+- CEGMA
+- tRNAscan-SE
+- Rfam
+- RNAmmer
+
+ Author: htafer
+ Last Updated: 2025-07-28
+"""
 
 import math
 import os
+import fnmatch
+from snakemake.utils import min_version
 
-#################################
-#                               #
-#      Own function definition  #
-#                               #
-#################################
+# Ensure minimum Snakemake version
+min_version("6.0.0")
 
+# Utility Functions
+def count_fasta_entries(file_name: str) -> int:
+    """
+    Count the number of FASTA entries in a file.
+    Args:
+        file_name: Path to FASTA file
+    Returns:
+        Number of sequences in the FASTA file
+    """
+    with open(file_name) as f:
+        return sum(1 for line in f if line.startswith(">"))
 
+def get_chunk_size(total_entries: int, chunks: int) -> int:
+    """
+    Calculate chunk size for parallel processing.
+    Args:
+        total_entries: Total number of sequences
+        chunks: Desired number of chunks
+    Returns:
+        Chunk size ensuring even distribution
+    """
+    return math.floor(2 * total_entries / chunks + 1)
 
-def getFileNumber(file_name, entryNumber):
-      f = open(file_name)
-      total = 0
-      for line in f:
-          if ">" in line:
-              total += 1
-      f.close()
-      return math.floor(2*total/entryNumber+1);    
+def get_bam_files(dir_path: str, species: str) -> list:
+    """
+    Get list of BAM files for a species.
+    Args:
+        dir_path: Base directory path
+        species: Species identifier
+    Returns:
+        List of BAM file paths
+    """
+    bam_path = os.path.join(dir_path, f"{species}.reads")
+    return [f for f in os.listdir(bam_path) if f.endswith('.bam')]
 
-
-#get bam file
-def getBamFile(dir,species):
-      list=[];
-      for file in os.listdir(dir+'/'+species+'.reads/.'):
-            if fnmatch.fnmatch(file,'*.*.bam'):
-                  list.append(file);
-      return list
-
-#uniquify ids
-def f10(seq, idfun=None):
+def unique_elements(seq: list, key_func=None) -> list:
+    """
+    Get unique elements from a sequence, preserving order.
+    Args:
+        seq: Input sequence
+        key_func: Optional function to extract comparison key
+    Returns:
+        List of unique elements
+    """
     seen = set()
-    results=[]
-    if idfun is None:
-        for x in seq:
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    else:
-        for x in seq:
-            x = idfun(x)
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    return results
+    return [x for x in seq if not (key_func(x) if key_func else x) in seen 
+            and not seen.add(key_func(x) if key_func else x)]
 
 
 
-#################################
-#                               #
-#      Variables setup          #
-#                               #
-#################################
+# Configuration
+#-------------
 
-    #################################                
-    #Environment                    #
-    #################################
+# Environment Setup
+HOME = os.environ['HOME']
+WORKDIR = os.path.join(HOME, "genomeAnnotationDN2")
+COMPUTEDIR = "/scratch"  # Temporary computation directory
+HMM = "./HMM"  # SNAP HMM models directory
 
-HOME=os.environ['HOME']
-WORKDIR=HOME+"/genomeAnnotationDN2"
-COMPUTEDIR="/scratch"
-HMM="./HMM"
+# Computational Resources
+THREADS = 16  # Number of parallel threads
 
-    #################################
-    #THREADS                        #
-    #################################
+# Input/Output Files
+GENOME = os.path.join(WORKDIR, "{genome}.fasta")  # Genome FASTA pattern
+GENOMES, = glob_wildcards(GENOME)  # Available genomes
 
-THREADS=16
+# Reference Databases
+UNIREF = os.path.join(WORKDIR, "protein/eurotiomycetesUniref90.clean.fa")  # UniRef90 proteins
+CEGMAKOGS = os.path.join(HOME, "bin/CEGMA_v2/data/kogs.fa")  # CEGMA KOGs
+CM = os.path.join(HOME, "data/Rfam.cm")  # Rfam covariance models
 
-    ##################################
-    #FILES                           #
-    ##################################
+# EVM Configuration
+EVMWEIGHT = os.path.join(WORKDIR, "weightFile.cfg")  # EVM weights configuration
 
-#GENOME
-GENOME=WORKDIR+"/{genome}.fasta"
-GENOMES,=glob_wildcards(GENOME);
+# Biological Parameters
+INTRON = 2000  # Maximum intron length (bp)
 
+# Annotation Types
+ANNOTATION = [
+    "allEvm2",    # EVM consensus predictions (second pass)
+    "Rfam",       # Rfam non-coding RNA annotations
+    "tRNAscan",   # tRNA predictions
+    "RNAmmer"     # rRNA predictions
+]
 
-UNIREF=WORKDIR+"/protein/eurotiomycetesUniref90.clean.fa"
-
-#CEGMAKOGS
-CEGMAKOGS=HOME+"/bin/CEGMA_v2/data/kogs.fa"
-
-#EVMWEIGHT
-EVMWEIGHT=WORKDIR+"/weightFile.cfg"
-
-CM=HOME+"/data/Rfam.cm"
-
-    ##################################
-    #BIOLOGY                         #
-    ##################################
-
-#BIOLOGY
-INTRON=2000
-
-    ##################################
-    #Annotation Type                 #
-    ##################################
-
-ANNOTATION="allEvm2 Rfam tRNAscan RNAmmer".split();
-
-print(ANNOTATION)
-     
-
-#Which rules are run locally # depends on which computer the pipeline is running
-#localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA, snapFirstPass, augustusFirstPass,prepareGFFForEVM,EVMFirstPass,snapSecondPass,augustusSecondPass,EVMSecondPass,prepareGFFForEVM2
-
+# Rules to run locally (not on cluster)
 localrules: all, clean, prepareGFFForEVM, prepareGFFForEVM2
 
+# Directory Structure
+DIRS = {
+    'logs': os.path.join(WORKDIR, 'logs'),
+    'gff': os.path.join(WORKDIR, 'gff'),
+    'hmm': os.path.join(WORKDIR, 'HMM'),
+    'scipio': os.path.join(WORKDIR, 'scipio'),
+    'temp': COMPUTEDIR
+}
+
+# Create necessary directories
+for dir_path in DIRS.values():
+    os.makedirs(dir_path, exist_ok=True)
+
+# Default Target Rule
 rule all:
-     input: expand("./gff/{genome}.{annotation}.gff", genome=GENOMES,annotation=ANNOTATION)
+    """
+    Generate all genome annotations for available genomes.
+    """
+    input:
+        expand("./gff/{genome}.{annotation}.gff", 
+               genome=GENOMES,
+               annotation=ANNOTATION)
 
+#-----------------------------------------------------------------------------#
+#                          RNA Gene Annotation Rules                           #
+#-----------------------------------------------------------------------------#
 
-
-
-##################################
-##                               #
-##      tRNAscan-SE              #
-##                               #
-##################################
-
+# tRNA Gene Prediction
 rule tRNAscanSE:
-     input: "{genome}.fasta"
-     output: gff="./gff/"+"{genome}.tRNAscan.gff", stat="./tRNAStat/"+"{genome}.tRNAscanSE.stat"
-     threads: THREADS
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}} 
-     cd {COMPUTEDIR}/${{prefix}}
-     mkdir -p {WORKDIR}/tRNAStat
-     tRNAscan-SE  -o tRNAscanSE.out -m {WORKDIR}/{output.stat}  {WORKDIR}/{input} 
-     tRNAscan2gff.pl < tRNAscanSE.out > {WORKDIR}/{output.gff}
-     rm -rf {COMPUTEDIR}/${{prefix}}
-     """
+    """
+    Predict transfer RNA genes using tRNAscan-SE.
+    """
+    input:
+        genome = "{genome}.fasta"
+    output:
+        gff = "gff/{genome}.tRNAscan.gff",
+        stats = "tRNAStat/{genome}.tRNAscanSE.stat"
+    threads: THREADS
+    params:
+        cluster = "-cwd -V -l mem_free=8G -l h_vmem=8G"
+    log:
+        "logs/tRNAscan/{genome}.log"
+    shell:
+        """
+        # Create temporary working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
 
-##################################   
-##                               #
-##      Rfam                     #
-##                               #  
-################################## 
+        # Create output directory
+        mkdir -p {WORKDIR}/tRNAStat
 
+        # Run tRNAscan-SE
+        tRNAscan-SE \
+            -o tRNAscanSE.out \
+            -m {WORKDIR}/{output.stats} \
+            {WORKDIR}/{input.genome} \
+            2> {WORKDIR}/{log}
+
+        # Convert output to GFF3
+        tRNAscan2gff.pl < tRNAscanSE.out > {WORKDIR}/{output.gff}
+
+        # Cleanup
+        rm -rf $workdir
+        """
+
+# Non-coding RNA Annotation using Rfam
 rule Rfam:
-     input: "{genome}.fasta"
-     output: gff="./gff/{genome}.Rfam.gff"
-     threads: THREADS
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     shell: """
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cd {COMPUTEDIR}/${{prefix}}
-     cmsearch --tblout bla {CM} {WORKDIR}/{input}
-     Rfam2gff.pl < bla > {WORKDIR}/{output.gff}
-     rm -rf {COMPUTEDIR}/${{prefix}}
-"""
+    """
+    Annotate non-coding RNAs using Rfam covariance models.
+    """
+    input:
+        genome = "{genome}.fasta"
+    output:
+        gff = "gff/{genome}.Rfam.gff"
+    threads: THREADS
+    params:
+        cluster = "-cwd -V -l mem_free=8G -l h_vmem=8G"
+    log:
+        "logs/rfam/{genome}.log"
+    shell:
+        """
+        # Create temporary working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
 
+        # Search for RNA families
+        cmsearch \
+            --cpu {threads} \
+            --tblout hits.tblout \
+            {CM} \
+            {WORKDIR}/{input.genome} \
+            2> {WORKDIR}/{log}
 
+        # Convert output to GFF3
+        Rfam2gff.pl < hits.tblout > {WORKDIR}/{output.gff}
 
-##################################
-##                               #
-##      RNAmmer                  #                                           
-##                               #
-##################################
+        # Cleanup
+        rm -rf $workdir
+        """
 
+# Ribosomal RNA Prediction
 rule RNAmmer:
-     input: "{genome}.fasta"
-     output: "./gff/"+"{genome}.RNAmmer.gff"
-     threads: THREADS
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     shell: """
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cd {COMPUTEDIR}/${{prefix}}
-     rnammer -S euk -m lsu,ssu,tsu -gff temp  < {WORKDIR}/{input} 
-     cat temp | grep -v "#" > {WORKDIR}/{output}
-     rm -rf {COMPUTEDIR}/{{$prefix}}
-"""
+    """
+    Predict ribosomal RNA genes using RNAmmer.
+    Identifies LSU, SSU, and 5S rRNA genes.
+    """
+    input:
+        genome = "{genome}.fasta"
+    output:
+        gff = "gff/{genome}.RNAmmer.gff"
+    threads: THREADS
+    params:
+        cluster = "-cwd -V -l mem_free=8G -l h_vmem=8G",
+        rna_types = "lsu,ssu,tsu"  # Large subunit, small subunit, and 5S rRNA
+    log:
+        "logs/rnammer/{genome}.log"
+    shell:
+        """
+        # Create temporary working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
+
+        # Predict rRNA genes
+        rnammer \
+            -S euk \
+            -m {params.rna_types} \
+            -gff temp \
+            < {WORKDIR}/{input.genome} \
+            2> {WORKDIR}/{log}
+
+        # Remove comments and move to final location
+        grep -v "^#" temp > {WORKDIR}/{output.gff}
+
+        # Cleanup
+        rm -rf $workdir
+        """
 
 
 
@@ -300,41 +386,131 @@ rule glimmerSecondPassTrain:
      rm -rf {COMPUTEDIR}/${{prefix}}
      """
 
-#################################################################################
-#                                                                               #
-#                            EVM FIRST PASS                                     #
-#                                                                               #
-#################################################################################
+#-----------------------------------------------------------------------------#
+#                     Evidence Modeler First Pass                              #
+#-----------------------------------------------------------------------------#
 
-
+# Evidence Modeler First Pass
 rule EVMFirstPass:
-     input: evm="./gff/{genome}.evm.gff", scipio="./gff/{genome}.scipio.evm.gff", genome="{genome}.fasta"
-     output: "./gff/{genome}.allEvm.gff"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cd {COMPUTEDIR}/${{prefix}}
-     partition_EVM_inputs.pl --genome {WORKDIR}/{input.genome} --protein_alignments {WORKDIR}/{input.scipio}  --min_intron_length 10 --partition_listing partitions_list.out --gene_predictions {WORKDIR}/{input.evm} --segmentSize 1000000 --overlapSize 20000
-     write_EVM_commands.pl --genome {WORKDIR}/{input.genome} --weights {EVMWEIGHT} --gene_predictions {WORKDIR}/{input.evm} --protein_alignments {WORKDIR}/{input.scipio} --output_file evm.out --partitions partitions_list.out  > commands.list
-     cat commands.list | parallel -j {threads} \"echo {{}} | bash\"
-     recombine_EVM_partial_outputs.pl --partitions partitions_list.out --output_file_name evm.out
-     convert_EVM_outputs_to_GFF3.pl  --partitions partitions_list.out --output evm.out --genome {WORKDIR}/{input.genome}
-     cat `find . -name \*.out.gff3` > {WORKDIR}/{output}
-     """
+    """
+    Run first pass of Evidence Modeler to integrate ab initio predictions
+    with protein alignment evidence.
+    """
+    input:
+        genome = "{genome}.fasta",
+        evm = "gff/{genome}.evm.gff",
+        scipio = "gff/{genome}.scipio.evm.gff"
+    output:
+        consensus = "gff/{genome}.allEvm.gff"
+    params:
+        cluster = "-cwd -V -l mem_free=8G -l h_vmem=8G",
+        segment_size = 1000000,     # Size of genomic segments for partitioning
+        overlap_size = 20000,       # Size of overlap between segments
+        min_intron = 10            # Minimum intron length
+    threads: THREADS
+    log:
+        "logs/evm/{genome}.first_pass.log"
+    shell:
+        """
+        # Create temporary working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
 
+        # Partition inputs for parallel processing
+        partition_EVM_inputs.pl \
+            --genome {WORKDIR}/{input.genome} \
+            --protein_alignments {WORKDIR}/{input.scipio} \
+            --gene_predictions {WORKDIR}/{input.evm} \
+            --segmentSize {params.segment_size} \
+            --overlapSize {params.overlap_size} \
+            --min_intron_length {params.min_intron} \
+            --partition_listing partitions_list.out \
+            2> {WORKDIR}/{log}
+
+        # Generate EVM commands
+        write_EVM_commands.pl \
+            --genome {WORKDIR}/{input.genome} \
+            --weights {EVMWEIGHT} \
+            --gene_predictions {WORKDIR}/{input.evm} \
+            --protein_alignments {WORKDIR}/{input.scipio} \
+            --output_file evm.out \
+            --partitions partitions_list.out \
+            > commands.list
+
+        # Execute EVM on partitions in parallel
+        cat commands.list | parallel -j {threads} "echo {{}} | bash" 2>> {WORKDIR}/{log}
+
+        # Combine results from all partitions
+        recombine_EVM_partial_outputs.pl \
+            --partitions partitions_list.out \
+            --output_file_name evm.out \
+            2>> {WORKDIR}/{log}
+
+        # Convert EVM output to GFF3
+        convert_EVM_outputs_to_GFF3.pl \
+            --partitions partitions_list.out \
+            --output evm.out \
+            --genome {WORKDIR}/{input.genome} \
+            2>> {WORKDIR}/{log}
+
+        # Concatenate all GFF3 outputs
+        cat $(find . -name "*.out.gff3") > {WORKDIR}/{output.consensus}
+
+        # Cleanup
+        rm -rf $workdir
+        """
+
+# Prepare GFF Files for EVM
 rule prepareGFFForEVM:
-     input: gm="./gff/{genome}.genemark.gff", snap="./gff/{genome}.snap.gff", augustus="./gff/{genome}.augustus.gff",scipio="./scipio/{genome}.yaml",glimmer="./gff/{genome}.glimmer.gff"
-     output: gm="./gff/{genome}.genemark.evm.gff", snap="./gff/{genome}.snap.evm.gff", augustus="./gff/{genome}.augustus.evm.gff", scipio="./gff/{genome}.scipio.evm.gff", glimmer="./gff/{genome}.glimmer.evm.gff", evmInput="./gff/{genome}.evm.gff"
-     shell:"""
-     SNAP_to_GFF3.pl {input.snap} > {output.snap}
-     augustus_to_GFF3.pl {input.augustus} > {output.augustus}
-     genemark_gtf2gff3 {input.gm} > {output.gm}
-     glimmerHMM_to_GFF3.pl {WORKDIR}/{input.glimmer} > {output.glimmer}
-     yaml2gff.1.4.pl {input.scipio} | grep "ID=" | sed -r 's/;Mismat.+//g' | sed -r 's/protein_match/nucleotide_to_protein_match/' | sed -r 's/Scipio/{wildcards.genome}/' | sed -r 's/Query/Target/' | sed -r 's/ID=/ID={wildcards.genome}./' > {output.scipio}
-     cat {output.gm} {output.snap} {output.augustus} {output.glimmer} > {output.evmInput}
-     """
+    """
+    Convert gene predictions from various sources to EVM-compatible GFF3 format
+    and combine them into a single input file.
+    """
+    input:
+        gm = "gff/{genome}.genemark.gff",
+        snap = "gff/{genome}.snap.gff",
+        augustus = "gff/{genome}.augustus.gff",
+        scipio = "scipio/{genome}.yaml",
+        glimmer = "gff/{genome}.glimmer.gff"
+    output:
+        gm = "gff/{genome}.genemark.evm.gff",
+        snap = "gff/{genome}.snap.evm.gff",
+        augustus = "gff/{genome}.augustus.evm.gff",
+        scipio = "gff/{genome}.scipio.evm.gff",
+        glimmer = "gff/{genome}.glimmer.evm.gff",
+        combined = "gff/{genome}.evm.gff"
+    log:
+        "logs/evm/{genome}.prepare_gff.log"
+    shell:
+        """
+        # Convert SNAP output
+        SNAP_to_GFF3.pl {input.snap} > {output.snap} 2>> {log}
+
+        # Convert AUGUSTUS output
+        augustus_to_GFF3.pl {input.augustus} > {output.augustus} 2>> {log}
+
+        # Convert GeneMark output
+        genemark_gtf2gff3 {input.gm} > {output.gm} 2>> {log}
+
+        # Convert GlimmerHMM output
+        glimmerHMM_to_GFF3.pl {WORKDIR}/{input.glimmer} > {output.glimmer} 2>> {log}
+
+        # Process Scipio YAML output
+        yaml2gff.1.4.pl {input.scipio} | \
+            grep "ID=" | \
+            sed -r 's/;Mismat.+//g' | \
+            sed -r 's/protein_match/nucleotide_to_protein_match/' | \
+            sed -r 's/Scipio/{wildcards.genome}/' | \
+            sed -r 's/Query/Target/' | \
+            sed -r 's/ID=/ID={wildcards.genome}./' \
+            > {output.scipio} 2>> {log}
+
+        # Combine all predictions
+        cat {output.gm} {output.snap} {output.augustus} {output.glimmer} \
+            > {output.combined} 2>> {log}
+        """
 
 #################################################################################
 #                                                                               #
@@ -495,45 +671,92 @@ rule cegma:
      """
 
 
-#################################################################################
-#                                                                               #
-#                             AB INITIO                                         #
-#                                                                               #
-#################################################################################
+#-----------------------------------------------------------------------------#
+#                     Ab initio Gene Prediction                                #
+#-----------------------------------------------------------------------------#
 
-
-
-
-##################################
-##                               #
-##     Ab-initio                 #
-##                               #
-##################################
-#
+# GeneMark-ES Gene Prediction
 rule geneMarkEs:
-     input: "{genome}.fasta"
-     output: "./gff/{genome}.genemark.gff"
-     threads: THREADS
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"     
-     shell:"""
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`
-     mkdir -p {COMPUTEDIR}/${{prefix}}
-     cd {COMPUTEDIR}/${{prefix}}
-     gmes_petap.pl --fungus --ES --cores {threads} --sequence {WORKDIR}/{input} --min_contig 300
-     cat genemark.gtf > {WORKDIR}/{output}
-     """
+    """
+    Perform ab initio gene prediction using GeneMark-ES.
+    Optimized for fungal genomes with self-training.
+    """
+    input:
+        genome = "{genome}.fasta"
+    output:
+        predictions = "gff/{genome}.genemark.gff"
+    params:
+        cluster = "-cwd -V -l mem_free=8G -l h_vmem=8G",
+        min_contig = 300     # Minimum contig size to consider
+    threads: THREADS
+    log:
+        "logs/genemark/{genome}.log"
+    shell:
+        """
+        # Create temporary working directory
+        prefix=$(date --rfc-3339=ns | md5sum | head -c 16)
+        workdir={COMPUTEDIR}/${{prefix}}
+        mkdir -p $workdir
+        cd $workdir
+
+        # Run GeneMark-ES prediction
+        gmes_petap.pl \
+            --fungus \
+            --ES \
+            --cores {threads} \
+            --sequence {WORKDIR}/{input.genome} \
+            --min_contig {params.min_contig} \
+            2> {WORKDIR}/{log}
+
+        # Move predictions to final location
+        mv genemark.gtf {WORKDIR}/{output.predictions}
+
+        # Cleanup
+        rm -rf $workdir
+        """
 
 
+# Clean Workspace
 rule clean:
-     shell: "rm -rf tRNAStat tRNAstat HMM scipio gff"
+    """
+    Remove all generated directories and intermediate files.
+    """
+    shell:
+        """
+        # Remove output directories
+        rm -rf \
+            tRNAStat \
+            tRNAstat \
+            HMM \
+            scipio \
+            gff \
+            logs
+        """
 
-##Masking
+# Repeat Masking with RepeatMasker
 rule repeatMasker:
-     input: "{genome}.fasta"
-     output: "{genome}.fasta.masked"
-     threads: THREADS
-     params: cluster="-cwd -V"     
-     shell:"""
-            RepeatMasker -qq -pa {threads} -species fungi {WORKDIR}/{input}
-           """
+    """
+    Mask repetitive elements in the genome using RepeatMasker.
+    Configured for fungal-specific repeat libraries.
+    """
+    input:
+        genome = "{genome}.fasta"
+    output:
+        masked = "{genome}.fasta.masked"
+    params:
+        cluster = "-cwd -V",
+        species = "fungi",        # Species-specific repeat library
+        options = "-qq"          # Quiet mode
+    threads: THREADS
+    log:
+        "logs/repeatmasker/{genome}.log"
+    shell:
+        """
+        RepeatMasker \
+            {params.options} \
+            -pa {threads} \
+            -species {params.species} \
+            {WORKDIR}/{input.genome} \
+            2> {log}
+        """
 

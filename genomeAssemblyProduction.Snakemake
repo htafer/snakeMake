@@ -1,15 +1,54 @@
-#run snakemake
+# =====================================
+# genomeAssemblyProduction.Snakemake
+# =====================================
 #
-#snakemake -d `pwd` -s `pwd`/transcriptomeAssembly.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub -l {params.cluster}'
-#look at https://www.mail-archive.com/bioinfo-general-nci@list.nih.gov/msg00018.html
-#Check parallell environment on cluster.
+# Purpose:
+#   This Snakemake workflow performs genome assembly using MIRA assembler.
+#   It maps reads to a reference genome and produces a de novo assembly.
+#
+# Workflow Steps:
+#   1. Read mapping to reference genome
+#   2. De novo assembly using MIRA
+#
+# Input Requirements:
+#   - FASTQ files containing sequencing reads
+#   - Reference genome in FASTA format
+#
+# Output Files:
+#   - Assembled genome sequences (*.assembled.fasta)
+#
+# Dependencies:
+#   - MIRA assembler
+#   - SGE cluster environment (for qsub)
+#
+# Usage:
+#   snakemake -s genomeAssemblyProduction.Snakemake \
+#     --cluster 'qsub -l {params.cluster}' \
+#     --stats snakemake.stats \
+#     -j <jobs>
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+#
+# =====================================
 
-WORKDIR="/home/lv70539/htafer/mappedAssemblies"
-COMPUTEDIR="/scratch"
-FILES=WORKDIR+"/{id}.fastq"
-IDS,=glob_wildcards(FILES)
-TEMPLATE="cTemplate1.fna"
-STRAIN="chaethomium"
+# Configuration
+configfile: "config.yaml"  # Optional: move parameters to config file
+
+# Directory structure
+WORKDIR = config.get("workdir", "/home/lv70539/htafer/mappedAssemblies")
+COMPUTEDIR = config.get("computedir", "/scratch")
+LOGDIR = "logs"
+
+# Input files pattern
+FILES = WORKDIR + "/{id}.fastq"
+IDS, = glob_wildcards(FILES)
+
+# Assembly parameters
+TEMPLATE = config.get("template", "cTemplate1.fna")
+STRAIN = config.get("strain", "chaethomium")
+THREADS = config.get("threads", 64)
+MEMORY = config.get("memory", "200G")
 #Which rules are run locally
 localrules: all
 

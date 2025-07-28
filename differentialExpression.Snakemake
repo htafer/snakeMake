@@ -1,6 +1,23 @@
-#run snakemake
+
+# ===============================
+# differentialExpression.Snakemake
+# ===============================
 #
-#snakemake -d `pwd` -s `pwd`/differentialExpression.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+# Purpose: Differential gene expression analysis from RNA-seq count data.
+#
+# Inputs:
+#   - FeatureCounts or similar count matrix (TSV)
+#   - Sample metadata (if required)
+#
+# Outputs:
+#   - Lists of differentially expressed genes
+#   - Summary statistics
+#
+# Usage:
+#   snakemake -d $(pwd) -s $(pwd)/differentialExpression.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'
+# Author: htafer
+# Last Updated: 2025-07-28
+# ===============================
 
 #################################
 #                               #
@@ -102,17 +119,17 @@ rule revigo:
 
      parallel -j {threads} "cut -f 2,3 {{}} -d ';' | sed -r 's/\\\"//g' | sed -r 's/;/ /' > {{}}.pV" ::: *.gene.GO.csv
      for i in *.pV; do 
-     	 j=`echo ${{i}}`;
-     	 echo ${{j}};
-     	 revigo.pl -f ${{i}} -t BP | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableBP.pdf/" > ${{i}}.tableBP
+           j=`echo ${{i}}`;
+           echo ${{j}};
+           revigo.pl -f ${{i}} -t BP | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableBP.pdf/" > ${{i}}.tableBP
          csplit ${{i}}.tableBP /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieBP;
          cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieBP.pdf\"/" >> ${{i}}.pieBP;
          revigo.pl -f ${{i}} -t CC | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableCC.pdf/" > ${{i}}.tableCC;
-     	 csplit ${{i}}.tableCC /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieCC;
+           csplit ${{i}}.tableCC /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieCC;
          cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieCC.pdf\"/" >> ${{i}}.pieCC;    
-     	 revigo.pl -f ${{i}} -t MF | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableMF.pdf/" > ${{i}}.tableMF;
-     	 csplit ${{i}}.tableMF /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieMF;
-     	 cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieMF.pdf\"/" >> ${{i}}.pieMF;
+           revigo.pl -f ${{i}} -t MF | sed -r "s/REVIGO Gene Ontology treemap/${{j}}/" | sed -r "s/revigo_treemap.pdf/${{j}}.tableMF.pdf/" > ${{i}}.tableMF;
+           csplit ${{i}}.tableMF /names\(stuff\)/+1  ; cat xx00 > ${{i}}.pieMF;
+           cat ~/share/database/pie.chart.R | sed -r "s/FILENAME/\"${{i}}.pieMF.pdf\"/" >> ${{i}}.pieMF;
      done;
 
      

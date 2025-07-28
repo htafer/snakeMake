@@ -1,88 +1,188 @@
-#run snakemake                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-#                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#snakemake -d `pwd` -s `pwd`/functionalAnnotation.Snakemake --stats snakemake.stats -j 100 --cluster 'qsub {params.cluster}'                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+
+# =====================================================================
+# functionalAnnotation.Snakemake
+# =====================================================================
+#
+# Description:
+#   Comprehensive functional annotation pipeline for predicted proteins,
+#   integrating multiple annotation tools and databases:
+#   - InterProScan (domains, motifs, GO terms)
+#   - MEROPS (peptidases)
+#   - CAZy (carbohydrate-active enzymes)
+#   - TCDB (transporters)
+#   - antiSMASH (secondary metabolites)
+#   - SwissProt (homology-based annotation)
+#
+# Input Requirements:
+#   - Protein FASTA files (.faa)
+#   - Reference databases:
+#     * InterProScan database
+#     * MEROPS peptidase database
+#     * CAZy database
+#     * TCDB (Transporter Classification Database)
+#     * UniRef90 (fungi subset)
+#
+# Outputs:
+#   1. Individual tool results:
+#      - InterProScan (.tsv)
+#      - MEROPS hits (.merops)
+#      - CAZy annotations (.cazy)
+#      - TCDB annotations (.tcdb)
+#      - antiSMASH results (.smash)
+#      - SwissProt BLAST results (.blastSwissProt)
+#   2. Merged annotations (.merged.tsv)
+#
+# Configuration:
+#   - Adjust THREADS and memory requirements as needed
+#   - Set database paths in config section
+#   - Cluster parameters can be modified in params.cluster
+#
+# Usage:
+#   snakemake -s functionalAnnotation.Snakemake \
+#             --configfile config.yaml \
+#             -j 100 \
+#             --cluster 'qsub {params.cluster}' \
+#             --stats snakemake.stats
+#
+# Notes:
+#   - Requires working installations of all analysis tools
+#   - Large memory requirements for InterProScan
+#   - Parallel execution supported for most steps
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+# ====================================================================
+
+from snakemake.utils import min_version
+min_version("6.0")
 
 
-#################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#      Variables setup          #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
+# =============================================================================
+# Configuration
+# =============================================================================
 
-    #################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-    #Environment                    #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-    #################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+import os
+from snakemake.utils import min_version
 
-HOME=os.environ['HOME']
-WORKDIR=HOME+"/functionalAnnotation"
-COMPUTEDIR=os.environ['GLOBAL']
-HMM="./HMM"
+# Environment Setup
+# -----------------------------------------------------------------------------
+HOME = os.environ['HOME']
+WORKDIR = os.path.join(HOME, "functionalAnnotation")
+COMPUTEDIR = os.environ.get('GLOBAL', '/tmp')
 
-    #################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-    #THREADS                        #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-    #################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+# Computational Resources
+# -----------------------------------------------------------------------------
+THREADS = 16
+MEMORY = "32G"  # Default memory per job
 
-THREADS=16
+# Input/Output Paths
+# -----------------------------------------------------------------------------
+# Input protein files pattern
+PROTEIN_PATTERN = os.path.join(WORKDIR, "{genome}.faa")
+GENOMES, = glob_wildcards(PROTEIN_PATTERN)
 
-    ##################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-    #FILES                           #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-    ##################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+# Database Paths
+# -----------------------------------------------------------------------------
+DB_DIR = os.path.join(HOME, "share/database")
+DATABASES = {
+    "uniref": os.path.join(DB_DIR, "uniref90UniprotFungi.fasta"),
+    "cazy": os.path.join(DB_DIR, "cazydb.fa"),
+    "merops": os.path.join(DB_DIR, "merops.fa"),
+    "tcdb": os.path.join(DB_DIR, "tcdb.fa"),
+    "tcdb_map": os.path.join(DB_DIR, "tcdb.dr")
+}
 
-#GENOME                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
-GENOME=WORKDIR+"/{genome}.faa"
-#GENOME=WORKDIR+"/{genome}.faa"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
-GENOMES,=glob_wildcards(GENOME);
+# Tool Paths and Settings
+# -----------------------------------------------------------------------------
+TOOLS = {
+    "interproscan": {
+        "path": os.path.join(COMPUTEDIR, "interproscan-5.11-51.0/interproscan.sh"),
+        "memory": "32G",
+        "batch_size": 50  # Number of sequences per batch
+    },
+    "antismash": {
+        "path": os.path.join(HOME, "bin/antismash-2.1.1"),
+        "memory": "8G"
+    }
+}
 
+# Analysis Parameters
+# -----------------------------------------------------------------------------
+PARAMS = {
+    "blast": {
+        "evalue": 1e-3,
+        "outfmt": "7 qseqid qlen qstart qend sseqid slen sstart send pident nident evalue"
+    },
+    "interproscan": {
+        "analyses": ["Pfam", "SMART", "ProDom", "PRINTS", "PIRSF"],
+        "goterms": True,
+        "pathways": True
+    }
+}
 
-#PANNZERDB=HOME+"/share/database/pannzer/PANNZER_DB/Pannzer_dump.sql"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
-#PANNZERDIR=HOME+"/share/database/pannzer/PANNZER_DB/"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-#PANNZERUNIPROT=HOME+"/share/database/pannzer/PANNZER_DB/UNIPROTClean.tab"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-
-
-UNIREF=HOME+"/share/database/uniref90UniprotFungi.fasta"
-CAZY=HOME+"/share/database/cazydb.fa"
-MEROPS=HOME+"/share/database/merops.fa"
-TCDB=HOME+"/share/database/tcdb.fa"
-TCDBR=HOME+"/share/database/tcdb.dr"
-DFVF=HOME+"/share/database/dfvf.fa"
-
-#CEGMAKOGS                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-CEGMAKOGS=HOME+"/bin/CEGMA_v2/data/kogs.fa"
-
-#EVMWEIGHT                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-EVMWEIGHT=WORKDIR+"/weightFile.cfg"
-
-
-    ##################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-    #BIOLOGY                         #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-    ##################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
-
-#BIOLOGY                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-INTRON=2000
+# Cluster Configuration
+# -----------------------------------------------------------------------------
+CLUSTER_CONFIG = {
+    "default": "-cwd -V -l mem_free=8G -l h_vmem=8G",
+    "interproscan": "-cwd -V -l mem_free=32G -l h_vmem=32G",
+    "antismash": "-cwd -V -l mem_free=8G -l h_vmem=8G"
+}
 
 
 #Which rules are run locally # depends on which computer the pipeline is running                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
 #localrules: all, clean, geneMarkEs, cegma, scipio, cufflinks, cuffmerge, segemehl, segemehlIdx, bamToFastq, composeMerge, mergeAssemblies, trinityAlignment, trinityDeNovo,PASA, snapFirstPass, augustusFirstPass,prepareGFFFromEVM,EVMFirstPass,snapSecondPass,augustusSecondPass,EVMSecondPass,prepareGFFForEVM2,GOannotation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
 
-localrules: all, clean, gffToProt, interproscan
+# =============================================================================
+# Rules
+# =============================================================================
+
+# Define rules that should run locally
+localrules: 
+    all,
+    clean,
+    mergePredictions
+
+# -----------------------------------------------------------------------------
+# Target Rules
+# -----------------------------------------------------------------------------
 
 rule all:
-     input: expand("./{genome}.{anal}", genome=GENOMES,anal=['blastSwissProt','smash','merged.tsv'])
-
-
-##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##      merge interproscan, merops, tcdb, etc... into  .merge.tsv                #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-
+    """
+    Generate all annotation outputs for each genome.
+    """
+    input: 
+        expand(
+            "{genome}.{analysis}",
+            genome=GENOMES,
+            analysis=['blastSwissProt', 'smash', 'merged.tsv']
+        )
 
 rule mergePredictions:
-     input: merops="{genome}.merops", cazy="{genome}.cazy", tsv="{genome}.tsv", tcdb="{genome}.tcdb"
-     output: "{genome}.merged.tsv"
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     cat {input} > {output}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
-     """
+    """
+    Merge all annotation results into a single TSV file.
+    
+    Input:
+        merops: MEROPS peptidase annotations
+        cazy: CAZy enzyme annotations
+        tsv: InterProScan results
+        tcdb: Transporter classifications
+    
+    Output:
+        Combined annotation file in TSV format
+    """
+    input: 
+        merops="{genome}.merops",
+        cazy="{genome}.cazy",
+        tsv="{genome}.tsv",
+        tcdb="{genome}.tcdb"
+    output: 
+        merged="{genome}.merged.tsv"
+    log:
+        "logs/merge_predictions/{genome}.log"
+    shell:
+        """
+        (cat {input.merops} {input.cazy} {input.tsv} {input.tcdb} > {output.merged}) 2> {log}
+        """
 
 
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -91,23 +191,86 @@ rule mergePredictions:
 ##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
+# -----------------------------------------------------------------------------
+# Secondary Metabolite Analysis
+# -----------------------------------------------------------------------------
+
 rule antiSmash:
-     input: annotation="{genome}.gff", genome="{genome}.fasta"
-     output: "{genome}.smash"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
-     mkdir {COMPUTEDIR}/${{prefix}}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
-     cd {COMPUTEDIR}/${{prefix}}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-     cat {WORKDIR}/{input.annotation} | grep CDS | sed -r 's/ID=//g' | sed -r 's/;Parent.+//g' | perl -lane '($start,$end)=($F[3]<$F[4]? ($F[3],$F[4]):($F[4],$F[3])); print "$F[0].fasta\t$F[8]\t$start\t$end\thypo"' | sort -k 2,2 > annotationtable.txt                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-     cat {WORKDIR}/{input.genome} | perl -lane '$line=$F[0]; chomp($line); if($line=~/^>/){{$fileName=$line; $fileName=~s/>//g; $fileName.=".fasta"; `rm $fileName;`}} open(FILE,">>$fileName"); print FILE $line; close(FILE);'                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-     ln -s ~/bin/antismash-2.1.1/format_embl.py .                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-     python ./format_embl.py                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-     parallel -j 8 " ~/bin/antismash-2.1.1/run_antismash {} -c 32 --outputfolder  {}.out" ::: *.embl                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
-     mkdir {WORKDIR}/{output}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
-     mv *.out {WORKDIR}/{output}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-     """
+    """
+    Detect secondary metabolite biosynthesis gene clusters using antiSMASH.
+    
+    Input:
+        annotation: Gene annotations in GFF format
+        genome: Genome sequence in FASTA format
+    
+    Output:
+        Directory containing antiSMASH results
+    
+    Notes:
+        - Uses a temporary directory for processing
+        - Runs multiple antiSMASH analyses in parallel
+        - Requires significant compute resources
+    """
+    input: 
+        annotation="{genome}.gff",
+        genome="{genome}.fasta"
+    output: 
+        directory("{genome}.smash")
+    params:
+        cluster=CLUSTER_CONFIG["antismash"],
+        antismash_path=TOOLS["antismash"]["path"],
+        temp_dir=lambda wildcards: os.path.join(
+            COMPUTEDIR,
+            "antismash_" + wildcards.genome + "_" + str(hash(os.path.basename(wildcards.genome)))[:8]
+        )
+    threads: THREADS
+    log:
+        "logs/antismash/{genome}.log"
+    shell:
+        """
+        # Create and enter temporary directory
+        mkdir -p {params.temp_dir}
+        cd {params.temp_dir}
+        
+        # Process GFF file to create annotation table
+        (cat {WORKDIR}/{input.annotation} | \
+            grep CDS | \
+            sed -r 's/ID=//g' | \
+            sed -r 's/;Parent.+//g' | \
+            perl -lane '($start,$end)=($F[3]<$F[4]? ($F[3],$F[4]):($F[4],$F[3])); 
+                      print "$F[0].fasta\\t$F[8]\\t$start\\t$end\\thypo"' | \
+            sort -k 2,2 > annotationtable.txt) 2>> {log}
+        
+        # Split genome into individual FASTA files
+        cat {WORKDIR}/{input.genome} | \
+            perl -lane '$line=$F[0]; chomp($line); 
+                      if($line=~/^>/){{
+                          $fileName=$line; 
+                          $fileName=~s/>//g; 
+                          $fileName.=".fasta"; 
+                          `rm -f $fileName;`
+                      }} 
+                      open(FILE,">>$fileName"); 
+                      print FILE $line; 
+                      close(FILE);' 2>> {log}
+        
+        # Prepare EMBL format files
+        ln -sf {params.antismash_path}/format_embl.py .
+        python ./format_embl.py 2>> {log}
+        
+        # Run antiSMASH in parallel
+        parallel -j 8 "{params.antismash_path}/run_antismash {{}} \
+            -c {threads} \
+            --outputfolder {{.}}.out" ::: *.embl 2>> {log}
+        
+        # Move results to output directory
+        mkdir -p {WORKDIR}/{output}
+        mv *.out {WORKDIR}/{output}/ 2>> {log}
+        
+        # Cleanup
+        cd {WORKDIR}
+        rm -rf {params.temp_dir}
+        """
 
 
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -139,48 +302,122 @@ rule antiSmash:
 
 
 
+# -----------------------------------------------------------------------------
+# Transporter and Peptidase Analysis
+# -----------------------------------------------------------------------------
+
 rule TCDB:
-     input: protein="{genome}.faa", tcdb=TCDB
-     output: "{genome}.tcdb"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     #BLASTP                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-     blastp -db {input.tcdb} -query {input.protein} -num_threads {threads} -evalue 1e-3 -outfmt "7 qseqid qlen qstart qend sseqid slen sstart send pident nident evalue" > {output}.temp                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-     #Format and convert it to tsv format                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
-     for i in `cut -f 1 {output}.temp | grep -v "#" | sort -u`; do                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-                    grep $i {output}.temp | grep -v "#" | sort -k 11,11g | sed -r 's/gnl\|TC-DB\|//g' | head -n1 | perl -lane 'my $id=$F[4]; my $newId =`grep $id {TCDBR}`; $newId=~s/.+TCDB;//g; $newId=~s/;.+//g; @temp=split(/\./,$newId); $newId=join("",@temp[0..2]); printf "$F[0]\tbla\t$F[1]\ttcdb\t$newId\t$F[2]\t$F[3]\t$F[10]\n"';                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
-     done | sort -u >  {output}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
-     """
-
-
-
-
-##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##                            MEROPS                                             #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
-
-#How to get merops database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
-#wget ftp://ftp.sanger.ac.uk/pub/MEROPS/current_release/pepunit.lib                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
-#mv pepunit.lib ~/share/database/                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-#cp pepunit.lib merops.fa                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
-#mv merops.tmp merops.fa                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-#formatdb -i merops.fa -p T -o T                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
+    """
+    Search proteins against Transporter Classification Database (TCDB).
+    
+    This rule identifies potential transporters by comparing protein sequences
+    against the TCDB database using BLAST, then processes and formats the results.
+    
+    Input:
+        protein: Protein sequences in FASTA format
+        tcdb: TCDB database
+    
+    Output:
+        TSV file containing TCDB annotations
+    """
+    input:
+        protein="{genome}.faa",
+        tcdb=DATABASES["tcdb"]
+    output:
+        final="{genome}.tcdb",
+        temp=temp("{genome}.tcdb.temp")
+    params:
+        cluster=CLUSTER_CONFIG["default"],
+        evalue=PARAMS["blast"]["evalue"],
+        outfmt=PARAMS["blast"]["outfmt"],
+        tcdb_map=DATABASES["tcdb_map"]
+    threads: THREADS
+    log:
+        "logs/tcdb/{genome}.log"
+    shell:
+        """
+        # Run BLAST search against TCDB
+        (blastp -db {input.tcdb} \
+               -query {input.protein} \
+               -num_threads {threads} \
+               -evalue {params.evalue} \
+               -outfmt "{params.outfmt}" \
+               > {output.temp}) 2> {log}
+        
+        # Process results and get best hits
+        (for id in $(cut -f 1 {output.temp} | grep -v "#" | sort -u); do
+            grep "$id" {output.temp} | \
+            grep -v "#" | \
+            sort -k 11,11g | \
+            sed -r 's/gnl\|TC-DB\|//g' | \
+            head -n1 | \
+            perl -lane '
+                my $id = $F[4];
+                my $newId = `grep $id {params.tcdb_map}`;
+                $newId =~ s/.+TCDB;//g;
+                $newId =~ s/;.+//g;
+                my @temp = split(/\./, $newId);
+                $newId = join("", @temp[0..2]);
+                printf "$F[0]\\tbla\\t$F[1]\\ttcdb\\t$newId\\t$F[2]\\t$F[3]\\t$F[10]\\n";
+            '
+        done | sort -u > {output.final}) 2>> {log}
+        """
 
 rule MEROPS:
-     input: protein="{genome}.faa", merops=MEROPS
-     output: "{genome}.merops"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     #BLASTP                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-     blastp -db {input.merops} -query {input.protein} -num_threads {threads} -evalue 1e-3 -outfmt "7 qseqid qlen qstart qend sseqid slen sstart send pident nident evalue" > {output}.temp                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-     #For each gene get the hit with the lowest evalue / convert it to tsv format                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-     for i in `cut -f 1 {output}.temp | grep -v "#" | sort -u`; do grep $i {output}.temp | grep -v "#" | sort -k 11,11g | head -n 1 | perl -lane 'my $id=$F[4]; $id=~s/[A-Z]$//;$id=~s/[^_]+_//; printf "$F[0]\tbla\t$F[1]\tMerops\t$id\t$F[2]\t$F[3]\t$F[10]\n"'; done | sort -u > {output};
-     printf "\n" >> output
-     """
+    """
+    Search proteins against MEROPS peptidase database.
+    
+    This rule identifies potential peptidases by comparing protein sequences
+    against the MEROPS database using BLAST, then processes and formats the results.
+    
+    Input:
+        protein: Protein sequences in FASTA format
+        merops: MEROPS database
+    
+    Output:
+        TSV file containing MEROPS annotations
+    
+    Notes:
+        MEROPS database can be obtained from:
+        ftp://ftp.sanger.ac.uk/pub/MEROPS/current_release/pepunit.lib
+    """
+    input:
+        protein="{genome}.faa",
+        merops=DATABASES["merops"]
+    output:
+        final="{genome}.merops",
+        temp=temp("{genome}.merops.temp")
+    params:
+        cluster=CLUSTER_CONFIG["default"],
+        evalue=PARAMS["blast"]["evalue"],
+        outfmt=PARAMS["blast"]["outfmt"]
+    threads: THREADS
+    log:
+        "logs/merops/{genome}.log"
+    shell:
+        """
+        # Run BLAST search against MEROPS
+        (blastp -db {input.merops} \
+               -query {input.protein} \
+               -num_threads {threads} \
+               -evalue {params.evalue} \
+               -outfmt "{params.outfmt}" \
+               > {output.temp}) 2> {log}
+        
+        # Process results and get best hits
+        (for id in $(cut -f 1 {output.temp} | grep -v "#" | sort -u); do
+            grep "$id" {output.temp} | \
+            grep -v "#" | \
+            sort -k 11,11g | \
+            head -n1 | \
+            perl -lane '
+                my $id = $F[4];
+                $id =~ s/[A-Z]$//;
+                $id =~ s/[^_]+_//;
+                printf "$F[0]\\tbla\\t$F[1]\\tMerops\\t$id\\t$F[2]\\t$F[3]\\t$F[10]\\n";
+            '
+        done | sort -u > {output.final}) 2>> {log}
+        """
 
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 ##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -188,17 +425,72 @@ rule MEROPS:
 ##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
+# -----------------------------------------------------------------------------
+# Carbohydrate-Active Enzyme Analysis
+# -----------------------------------------------------------------------------
+
 rule CAZY:
-     input: protein="{genome}.faa", cazy=CAZY
-     output: "{genome}.cazy"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     #BLASTP                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-     blastp -db {input.cazy} -query {input.protein} -num_threads {threads} -evalue 1e-3 -outfmt "7 qseqid qlen qstart qend sseqid slen sstart send pident nident evalue" > {output}.temp                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     
-     #Format output                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
-     for i in `cut -f 1 {output}.temp | grep -v "#" | sort -u`; do grep $i {output}.temp | grep -v "#" | sort -k 11,11g | head -n 1 | perl -lane 'my $id=$F[4]; $id=~s/[A-Z]$//;$id=~s/[^_]+_//; printf "$F[0]\tbla\t$F[1]\tCazy\t$id\t$F[2]\t$F[3]\t$F[10]\n"'; done | sort -u > {output};                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
-     """
+    """
+    Search proteins against CAZy (Carbohydrate-Active enZYmes) database.
+    
+    This rule identifies potential carbohydrate-active enzymes by comparing
+    protein sequences against the CAZy database using BLAST, then processes
+    and formats the results.
+    
+    Input:
+        protein: Protein sequences in FASTA format
+        cazy: CAZy database
+    
+    Output:
+        TSV file containing CAZy annotations with the following columns:
+        1. query ID
+        2. source ('bla')
+        3. query length
+        4. database ('Cazy')
+        5. CAZy family
+        6. alignment start
+        7. alignment end
+        8. E-value
+    """
+    input:
+        protein="{genome}.faa",
+        cazy=DATABASES["cazy"]
+    output:
+        final="{genome}.cazy",
+        temp=temp("{genome}.cazy.temp")
+    params:
+        cluster=CLUSTER_CONFIG["default"],
+        evalue=PARAMS["blast"]["evalue"],
+        outfmt=PARAMS["blast"]["outfmt"]
+    threads: THREADS
+    log:
+        "logs/cazy/{genome}.log"
+    shell:
+        """
+        # Run BLAST search against CAZy database
+        (blastp -db {input.cazy} \
+               -query {input.protein} \
+               -num_threads {threads} \
+               -evalue {params.evalue} \
+               -outfmt "{params.outfmt}" \
+               > {output.temp}) 2> {log}
+        
+        # Process results to get best hits and format output
+        (for id in $(cut -f 1 {output.temp} | grep -v "#" | sort -u); do
+            grep "$id" {output.temp} | \
+            grep -v "#" | \
+            sort -k 11,11g | \
+            head -n1 | \
+            perl -lane '
+                my $id = $F[4];
+                # Clean up CAZy family ID
+                $id =~ s/[A-Z]$//;
+                $id =~ s/[^_]+_//;
+                # Output in standard format
+                printf "$F[0]\\tbla\\t$F[1]\\tCazy\\t$id\\t$F[2]\\t$F[3]\\t$F[10]\\n";
+            '
+        done | sort -u > {output.final}) 2>> {log}
+        """
 
 
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -208,26 +500,79 @@ rule CAZY:
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
 
+# -----------------------------------------------------------------------------
+# InterProScan Analysis
+# -----------------------------------------------------------------------------
+
 rule interproscan:
-     input: protein="{genome}.faa"
-     output: tsv="{genome}.tsv", dir="{genome}.interproscan.temp"
-     params: cluster="-cwd -V -l mem_free=32G -l h_vmem=32G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     mkdir -p {WORKDIR}/{output.dir}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
-     cd {WORKDIR}/{output.dir}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     rm *                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
-     split -l 50 -d {WORKDIR}/{input.protein} {wildcards.genome}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-     #computation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            
-     parallel -j 85 'echo "cd ${{GLOBAL}}/interproscan-5.11-51.0 && ./interproscan.sh -i {WORKDIR}/{output.dir}/{{}} -f xml -goterms -pa -o {WORKDIR}/{output.dir}/{{}}.bla" | qsub -cwd -V -sync y' ::: {wildcards.genome}*                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
-     #conversion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
-     echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' > all.xml                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
-     echo '<protein-matches xmlns="http://www.ebi.ac.uk/interpro/resources/schemas/interproscan5">' >> all.xml                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     cat -v *.bla | sed -r 's/\^\\//g' | grep -Pv "(<?xml|protein-matches)"  >> all.xml                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
-     echo '</protein-matches>' >> all.xml                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
-     ${{GLOBAL}}/interproscan-5.11-51.0/interproscan.sh -mode convert -i all.xml -f tsv                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
-     mv all.xml.tsv {WORKDIR}/{output.tsv}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
-     """
+    """
+    Run InterProScan analysis on protein sequences.
+    
+    This rule performs comprehensive protein domain and family analysis using
+    InterProScan. It splits the input into manageable chunks and processes them
+    in parallel for better performance.
+    
+    Input:
+        protein: Protein sequences in FASTA format
+    
+    Output:
+        tsv: Tab-separated results file
+        dir: Directory containing intermediate results
+    
+    Note:
+        Requires significant memory and compute resources.
+    """
+    input:
+        protein="{genome}.faa"
+    output:
+        tsv="{genome}.tsv",
+        dir=directory("{genome}.interproscan.temp")
+    params:
+        cluster=CLUSTER_CONFIG["interproscan"],
+        iprscan_path=TOOLS["interproscan"]["path"],
+        batch_size=TOOLS["interproscan"]["batch_size"],
+        analyses=",".join(PARAMS["interproscan"]["analyses"]),
+        goterms=lambda w: "-goterms" if PARAMS["interproscan"]["goterms"] else "",
+        pathways=lambda w: "-pa" if PARAMS["interproscan"]["pathways"] else ""
+    threads: THREADS
+    log:
+        "logs/interproscan/{genome}.log"
+    shell:
+        """
+        # Prepare working directory
+        rm -rf {WORKDIR}/{output.dir}
+        mkdir -p {WORKDIR}/{output.dir}
+        cd {WORKDIR}/{output.dir}
+        
+        # Split input into chunks for parallel processing
+        split -l {params.batch_size} -d {WORKDIR}/{input.protein} {wildcards.genome} 2> {log}
+        
+        # Run InterProScan on each chunk
+        (parallel -j 85 'echo "cd {params.iprscan_path} && \
+            ./interproscan.sh \
+            -i {WORKDIR}/{output.dir}/{{}} \
+            -f xml \
+            {params.goterms} \
+            {params.pathways} \
+            -appl {params.analyses} \
+            -o {WORKDIR}/{output.dir}/{{}}.bla" | \
+            qsub -cwd -V -sync y' ::: {wildcards.genome}*) 2>> {log}
+        
+        # Combine results
+        (echo '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' > all.xml
+        echo '<protein-matches xmlns="http://www.ebi.ac.uk/interpro/resources/schemas/interproscan5">' >> all.xml
+        cat -v *.bla | \
+            sed -r 's/\^\\//g' | \
+            grep -Pv "(<?xml|protein-matches)" >> all.xml
+        echo '</protein-matches>' >> all.xml) 2>> {log}
+        
+        # Convert to TSV format
+        ({params.iprscan_path}/interproscan.sh \
+            -mode convert \
+            -i all.xml \
+            -f tsv
+        mv all.xml.tsv {WORKDIR}/{output.tsv}) 2>> {log}
+        """
 
 #{WORKDIR}/{input.protein}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -236,14 +581,51 @@ rule interproscan:
 ##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 
+# -----------------------------------------------------------------------------
+# SwissProt Analysis
+# -----------------------------------------------------------------------------
+
 rule blastSwissProt:
-     input: protein="{genome}.faa", swissprot=UNIREF
-     output: "{genome}.blastSwissProt"
-     params: cluster="-cwd -V -l mem_free=8G -l h_vmem=8G"
-     threads: THREADS
-     shell:"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
-     blastp -db {input.swissprot} -query {input.protein} -num_threads {threads} -outfmt "7 qseqid qlen qstart qend sseqid slen sstart send pident nident evalue" > {output}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
-     """
+    """
+    Search proteins against UniRef90 (fungi subset) database.
+    
+    This rule performs BLAST searches against the UniRef90 database
+    (filtered for fungi) to identify homologous proteins and potential
+    functions.
+    
+    Input:
+        protein: Protein sequences in FASTA format
+        swissprot: UniRef90 fungi database
+    
+    Output:
+        BLAST results in tabular format with:
+        - Query sequence ID and length
+        - Alignment coordinates
+        - Hit sequence ID and length
+        - Percent identity and number of identical matches
+        - E-value
+    """
+    input:
+        protein="{genome}.faa",
+        swissprot=DATABASES["uniref"]
+    output:
+        "{genome}.blastSwissProt"
+    params:
+        cluster=CLUSTER_CONFIG["default"],
+        evalue=PARAMS["blast"]["evalue"],
+        outfmt=PARAMS["blast"]["outfmt"]
+    threads: THREADS
+    log:
+        "logs/blast_swissprot/{genome}.log"
+    shell:
+        """
+        (blastp -db {input.swissprot} \
+               -query {input.protein} \
+               -num_threads {threads} \
+               -evalue {params.evalue} \
+               -outfmt "{params.outfmt}" \
+               > {output}) 2> {log}
+        """
 
 ##################################################################################                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 ##                                                                               #                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -259,8 +641,39 @@ rule blastSwissProt:
 #     gff3_file_to_proteins.pl {input.gff} {input.genome} | rmenterdb.pl | sed -r 's/ EVM.+//g' > {output.protein}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
 #     """                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    
 
+# -----------------------------------------------------------------------------
+# Cleanup
+# -----------------------------------------------------------------------------
+
 rule clean:
-     shell: "rm -rf *.sizes *.masked *.split *.lastz *.psl *.chain *.preChain *.net *.maf *.axt *.sh.* *.out *.tbl *.cat *.scipio"
+    """
+    Remove all intermediate and temporary files.
+    
+    This rule cleans up the workspace by removing various intermediate files
+    generated during the analysis process.
+    """
+    shell:
+        """
+        echo "Cleaning workspace..."
+        rm -rf \
+            *.sizes \
+            *.masked \
+            *.split \
+            *.lastz \
+            *.psl \
+            *.chain \
+            *.preChain \
+            *.net \
+            *.maf \
+            *.axt \
+            *.sh.* \
+            *.out \
+            *.tbl \
+            *.cat \
+            *.scipio \
+            logs/*
+        echo "Workspace cleaned."
+        """
 
 
 

@@ -1,0 +1,28 @@
+# =====================================
+# lncRNA Analysis Configuration
+# =====================================
+
+# Directory paths
+workdir: "/media/ckustor/work/lncRNA/snakemaketest"
+logdir: "logs"
+
+# Computing resources
+threads: 4
+max_memory: "16G"
+
+# Project information
+project_id: "claImm"
+
+# Database paths
+blast_db: "UniProt90pSaccharomyceta.fasta"
+pfam_db: "/home/ckustor/bin/PfamScan/db/"
+
+# Tool parameters
+blast_evalue: 0.001          # E-value cutoff for BLAST searches
+pfam_evalue: 0.001          # E-value cutoff for PFAM searches
+min_transcript_length: 1000  # Minimum transcript length for lncRNA candidates
+cpat_probability_cutoff: 0.01  # CPAT coding probability cutoff
+
+# Feature counting parameters
+stranded: 1                  # 0=unstranded, 1=stranded, 2=reversely stranded
+feature_type: "exon"         # Feature type to count reads on

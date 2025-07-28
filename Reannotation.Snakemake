@@ -1,98 +1,133 @@
-#run snaxli kemake                                                                                             
-#                 
-#snakemake -d `pwd` -s `pwd`/Reannotation.Snakemake --stats snakemake.stats -j 100 --cluster 'sbatch {params.cluster}'
-
-#########################################################################                                
-## prepare directories and necessary files:                             #                                 
-#    maindirectory: Reannotation                                        #                                
-#  files: genome.fasta, annotation.gff3,                                #                               
-#  subdirectory "reads" - files: samples.fastq or samples.bam             
-#                                # necessary programs:                                                  
-#                                # introncalc2.0.pl, Star, cufflinks, Trinity, PASA                     
-#                                # clustermodules:                                                      
-#                                # module load python/3.4.2                                             
-#                                
-#########################################################################
-
-#################################                                      
-#                               #                                      
-#     Import modules            #                                      
-#                               #                                      
-#################################                                      
+# =====================================
+# Reannotation.Snakemake
+# =====================================
+#
+# Purpose:
+#   This Snakemake workflow performs genome reannotation using RNA-seq data,
+#   combining evidence from multiple sources including Trinity assemblies,
+#   PASA updates, and protein predictions.
+#
+# Workflow Steps:
+#   1. RNA-seq Mapping (STAR)
+#   2. Transcriptome Assembly
+#      - De novo assembly (Trinity)
+#      - Genome-guided assembly (Trinity)
+#      - Reference-guided assembly (Cufflinks)
+#   3. PASA Analysis
+#      - Transcript alignment and assembly
+#      - Annotation comparison and update
+#   4. Protein Prediction
+#      - TransDecoder
+#      - CPAT
+#      - BLAST/PFAM validation
+#   5. lncRNA Identification
+#
+# Input Requirements:
+#   - Genome sequence (FASTA)
+#   - Initial annotation (GFF3)
+#   - RNA-seq reads (FASTQ)
+#   - Protein databases (UniProt, PFAM)
+#
+# Output Files:
+#   - Updated annotation (GFF3)
+#   - Novel transcripts
+#   - lncRNA annotations
+#   - Protein predictions
+#
+# Dependencies:
+#   - STAR (RNA-seq aligner)
+#   - Trinity (transcriptome assembler)
+#   - Cufflinks
+#   - PASA
+#   - TransDecoder
+#   - CPAT
+#   - BLAST
+#   - PFAM
+#   - MySQL (for PASA)
+#
+# Usage:
+#   snakemake -s Reannotation.Snakemake \
+#     --cluster 'sbatch {params.cluster}' \
+#     --stats snakemake.stats \
+#     -j <jobs>
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+# =====================================
 
 import math
 import os
+import os.path
+from snakemake.utils import validate
+import fnmatch
 
-#################################                                      
-#                               #                                      
-#      Own function definition  #                                      
-#                               #                                      
-#################################                                      
-
-
+# Helper Functions
+#################################
 
 def getFileNumber(file_name, entryNumber):
-      f = open(file_name)
-      total = 0
-      for line in f:
-          if ">" in line:
-              total += 1
-      f.close()
-      return math.floor(2*total/entryNumber+1);
+    """Count FASTA entries and calculate optimal split number."""
+    with open(file_name) as f:
+        total = sum(1 for line in f if line.startswith(">"))
+    return math.floor(2 * total / entryNumber + 1)
 
+def getBamFile(dir, species):
+    """Get list of BAM files for a species."""
+    pattern = "*.*.bam"
+    species_dir = os.path.join(dir, species + ".reads")
+    return [f for f in os.listdir(species_dir) 
+            if fnmatch.fnmatch(f, pattern)]
 
-#get bam file     
-def getBamFile(dir,species):
-      list=[];
-      for file in os.listdir(dir+'/'+species+'.reads/.'):
-            if fnmatch.fnmatch(file,'*.*.bam'):
-                  list.append(file);
-      return list
-
-#uniquify ids     
-def f10(seq, idfun=None):
+def uniquify(seq, idfun=None):
+    """Remove duplicates from a sequence while maintaining order."""
     seen = set()
-    results=[]
     if idfun is None:
-        for x in seq:
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    else:
-        for x in seq:
-            x = idfun(x)
-            if x in seen:
-                continue
-            seen.add(x)
-            results.append(x)
-    return results
+        idfun = lambda x: x
+    
+    return [x for x in seq if not (idfun(x) in seen or seen.add(idfun(x)))]
 
+# Configuration
+#################################
 
+# Load config file
+configfile: "config.yaml"
 
-#################################                                      
-#                               #                                      
-#      Variables setup          #                                      
-#                               #                                      
-#################################                                      
+# Directory Structure
+WORKDIR = config.get("workdir", "/media/work/genomes/exoDer/annotation/reAnnotation")
+COMPUTEDIR = config.get("computedir", "/global/lv70539/htafer")
+READS = config.get("reads_dir", "/global/lv70539/htafer/reads")
+LOGDIR = "logs"
 
-    #################################                                  
-    #Environment                    #                                  
-    #################################                                  
+# Computing Resources
+THREADS = config.get("threads", 16)
+MAX_MEMORY = config.get("max_memory", "64G")
 
-WORKDIR="/media/work/genomes/exoDer/annotation/reAnnotation/"
-#WORKDIR="/media/ckustor/work/Reannotation"                            
-#COMPUTEDIR="/tmp"
+# Project Information
+ID = config.get("project_id", "exoDer")
+GENOME = ID + ".fasta"
+ANNOT = ID + ".Protein.gff3"
 
-COMPUTEDIR="/global/lv70539/htafer"
-READS="/global/lv70539/htafer/reads"
-#COMPUTEDIR="/scratch"         
+# Input Files
+BAMFILES = os.path.join(READS, "{samples}.fastq")
+BAMS, = glob_wildcards(BAMFILES)
+BAMS = sorted(BAMS)  # Ensure consistent order
 
-    #################################                                  
-    #THREADS                        #                                  
-    #################################                                  
+# Database Paths
+BLAST = config.get("blast_db", "/home/htafer/share/database/UniProt90pSaccharomyceta.fasta")
+PFAM = config.get("pfam_db", "/home/htafer/bin/PfamScan/db/")
 
-THREADS=16
+# Analysis Parameters
+INTRON = config.get("max_intron_length", 2000)
+MIN_TRANSCRIPT_LENGTH = config.get("min_transcript_length", 200)
+MIN_PROTEIN_LENGTH = config.get("min_protein_length", 100)
+
+# Cluster Configuration
+CLUSTER_PARTITION = config.get("cluster_partition", "mem_0064")
+CLUSTER_QOS = config.get("cluster_qos", "normal_0064")
+
+# Tool Parameters
+TRINITY_MEMORY = config.get("trinity_memory", "200G")
+STAR_MEMORY = config.get("star_memory", "64G")
+CUFFLINKS_MEMORY = config.get("cufflinks_memory", "32G")
 
     ##################################                                 
     #FILES                           #                                 
@@ -123,15 +158,65 @@ INTRON=2000
 #localrules: all, clean, STAR, STARIdx, bamToFastq, mergeBam, cufflinks, composeMerge, mergeAssemblies, normalization, trinityAlignment, trinityDeNovo, PASA, PASAtrainingset, PASAhints, mergeFastq, Annotcompare
 localrules: all, clean, composeMerge, mergeAssemblies, PASAtrainingset, PASAhints, mergeFastq, STARIdx
 
-##################################                                     
-##                               #                                     
-##      ALL                      #                                     
-##                               #                                     
-##################################                                     
+# Workflow Targets
+#################################
 
-
+# Rule: all
+# Purpose: Define all output files required from the workflow
 rule all:
-     input: annot=ID+".AnnotationUpdate", pasa=ID+".PASA", introns=ID+".introns.gff", transdecoder=ID+".PASAtrainingset", newProt=ID+".newProtein.gff3", otherTranscript=ID+".noKnownFunc.gff3"
+    input: 
+        annotation = ID + ".AnnotationUpdate",             # Updated genome annotation
+        pasa = ID + ".PASA",                             # PASA analysis results
+        introns = ID + ".introns.gff",                   # Intron annotations
+        transdecoder = ID + ".PASAtrainingset",          # TransDecoder predictions
+        new_proteins = ID + ".newProtein.gff3",          # Novel protein annotations
+        other_transcripts = ID + ".noKnownFunc.gff3",    # Uncharacterized transcripts
+        validation = "logs/validate.done"                # Input validation flag
+
+# Rule: validate_inputs
+# Purpose: Check that all required input files and tools exist
+rule validate_inputs:
+    output:
+        touch("logs/validate.done")
+    run:
+        # Check required directories
+        for dir in [WORKDIR, COMPUTEDIR, READS]:
+            if not os.path.exists(dir):
+                raise ValueError(f"Required directory not found: {dir}")
+        
+        # Check required input files
+        required_files = [
+            os.path.join(WORKDIR, GENOME),
+            os.path.join(WORKDIR, ANNOT),
+            BLAST,
+            os.path.join(PFAM, "Pfam-A.hmm")
+        ]
+        
+        missing_files = [f for f in required_files if not os.path.exists(f)]
+        if missing_files:
+            raise ValueError("Missing required files:\n" + "\n".join(missing_files))
+        
+        # Check RNA-seq input files
+        missing_reads = []
+        for sample in BAMS:
+            fastq = os.path.join(READS, f"{sample}.fastq")
+            if not os.path.exists(fastq):
+                missing_reads.append(fastq)
+            elif os.path.getsize(fastq) == 0:
+                missing_reads.append(f"{fastq} (empty)")
+        
+        if missing_reads:
+            raise ValueError("Missing or empty read files:\n" + "\n".join(missing_reads))
+        
+        # Check required tools are in PATH
+        required_tools = ["STAR", "trinity", "cufflinks", "blastx", "pfam_scan.pl"]
+        missing_tools = []
+        for tool in required_tools:
+            if not shutil.which(tool):
+                missing_tools.append(tool)
+        
+        if missing_tools:
+            raise ValueError("Required tools not found in PATH:\n" + "\n".join(missing_tools))
 
 ##################################################################################                              
 #                                                                                #
@@ -484,34 +569,116 @@ rule mergeBam:
      """
 
 
+# RNA-seq Mapping Rules
+#################################
+
+# Rule: STAR
+# Purpose: Map RNA-seq reads to the genome using STAR
 rule STAR:
-     input: reads="./reads/{samples}.fastq", idx=ID+".idx"
-     output: bam="./reads/{samples}.mapped.bam", sam="./reads/{samples}.mapped.sam"
-     params: cluster="--partition=mem_0064 --qos=normal_0064"
-     threads: THREADS
-     shell:"""    
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`                
-     mkdir -p {COMPUTEDIR}/${{prefix}}                                 
-     cd {COMPUTEDIR}/${{prefix}}                                       
-     STAR --genomeDir {WORKDIR}/{input.idx} --readFilesIn {WORKDIR}/{input.reads} --runThreadN {threads}  --twopassMode Basic  --outReadsUnmapped None --chimSegmentMin 12  --chimJunctionOverhangMin 12 --alignSJDBoverhangMin 10 --alignIntronMax {INTRON} --chimSegmentReadGapMax parameter 3  --alignSJstitchMismatchNmax 5 -1 5 5        
-     #sort sam files           
-     samtools view -bS {COMPUTEDIR}/${{prefix}}/Aligned.out.sam | samtools sort -  {COMPUTEDIR}/${{prefix}}/Aligned.sorted                                 
-     samtools view -h {COMPUTEDIR}/${{prefix}}/Aligned.sorted.bam | awk 'BEGIN {{OFS="\t"}} {{split($6,C,/[0-9]*/); split($6,L,/[SMDIN]/); if (C[2]=="S") {{$10=substr($10,L[1]+1); $11=substr($11,L[1]+1)}}; if (C[length(C)]=="S") {{L1=length($10)-L[length(L)-1]; $10=substr($10,1,L1); $11=substr($11,1,L1); }}; gsub(/[0-9]*S/,"",$6); print}}' > {COMPUTEDIR}/${{prefix}}/Aligned.sorted.sam        
-     #mv results to final directory                                    
-     mv {COMPUTEDIR}/${{prefix}}/Aligned.sorted.sam {WORKDIR}/{output.sam}                                     
-     mv {COMPUTEDIR}/${{prefix}}/Aligned.sorted.bam {WORKDIR}/{output.bam}                                     
-     #clean up    
-     rm -rf {COMPUTEDIR}/${{prefix}}                                   
-     """
+    input: 
+        reads = "./reads/{samples}.fastq",
+        idx = ID + ".idx"
+    output: 
+        bam = "./reads/{samples}.mapped.bam",
+        sam = "./reads/{samples}.mapped.sam"
+    params:
+        # Cluster parameters
+        cluster = "--partition={partition} --qos={qos}".format(
+            partition=CLUSTER_PARTITION,
+            qos=CLUSTER_QOS
+        ),
+        # STAR parameters
+        chim_segment_min = config.get("star", {}).get("chim_segment_min", 12),
+        overhang_min = config.get("star", {}).get("sjdb_overhang", 100),
+        max_intron = INTRON
+    threads: THREADS
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * int(STAR_MEMORY.rstrip("G")) * 1024
+    log:
+        "logs/mapping/{samples}_star.log"
+    shell: """
+        (# Create temp directory
+        prefix=`date --rfc-3339=ns | md5sum | head -c 16`
+        tempdir="{COMPUTEDIR}/${{prefix}}"
+        mkdir -p "$tempdir"
+        cd "$tempdir"
+        
+        # Run STAR alignment
+        STAR --genomeDir {WORKDIR}/{input.idx} \
+             --readFilesIn {WORKDIR}/{input.reads} \
+             --runThreadN {threads} \
+             --twopassMode Basic \
+             --outReadsUnmapped None \
+             --chimSegmentMin {params.chim_segment_min} \
+             --chimJunctionOverhangMin {params.chim_segment_min} \
+             --alignSJDBoverhangMin 10 \
+             --alignIntronMax {params.max_intron} \
+             --chimSegmentReadGapMax 3 \
+             --alignSJstitchMismatchNmax 5 -1 5 5 \
+             --outSAMtype BAM SortedByCoordinate \
+             2> {log}
 
+        # Process alignment files
+        samtools sort Aligned.sortedByCoord.out.bam -o Aligned.sorted.bam
+        samtools view -h Aligned.sorted.bam | \
+            awk 'BEGIN {{OFS="\t"}} {{
+                if ($0 ~ /^@/) {{
+                    print
+                    next
+                }}
+                split($6,C,/[0-9]*/)
+                split($6,L,/[SMDIN]/)
+                if (C[2]=="S") {{
+                    $10=substr($10,L[1]+1)
+                    $11=substr($11,L[1]+1)
+                }}
+                if (C[length(C)]=="S") {{
+                    L1=length($10)-L[length(L)-1]
+                    $10=substr($10,1,L1)
+                    $11=substr($11,1,L1)
+                }}
+                gsub(/[0-9]*S/,"",$6)
+                print
+            }}' > Aligned.sorted.sam
+        
+        # Move results to final location
+        mv Aligned.sorted.sam {WORKDIR}/{output.sam}
+        mv Aligned.sorted.bam {WORKDIR}/{output.bam}
+        
+        # Cleanup
+        rm -rf "$tempdir") 2>> {log}
+        """
 
+# Rule: STARIdx
+# Purpose: Generate STAR genome index
 rule STARIdx:
-     input: genome=ID+".fasta", gff=ID+".Protein.gff"
-     output: dir=ID+".idx"
-     threads: THREADS
-     shell:"""    
-     prefix=`date --rfc-3339=ns  | md5sum | head -c 16`                
-     mkdir -p {COMPUTEDIR}/${{prefix}}                                 
-     STAR -sjdbGTFfile {input.gff}  --sjdbOverhang 100 --runMode genomeGenerate --genomeDir {COMPUTEDIR}/${{prefix}} --genomeFastaFiles {WORKDIR}/{input} --runThreadN {threads}                        
-     mv {COMPUTEDIR}/${{prefix}} {WORKDIR}/{output.dir}                
-     """
+    input:
+        genome = ID + ".fasta",
+        gff = ID + ".Protein.gff"
+    output:
+        dir = directory(ID + ".idx")
+    params:
+        overhang = config.get("star", {}).get("sjdb_overhang", 100)
+    threads: THREADS
+    resources:
+        mem_mb = lambda wildcards, attempt: attempt * int(STAR_MEMORY.rstrip("G")) * 1024
+    log:
+        "logs/mapping/star_index.log"
+    shell: """
+        (# Create temp directory
+        prefix=`date --rfc-3339=ns | md5sum | head -c 16`
+        tempdir="{COMPUTEDIR}/${{prefix}}"
+        mkdir -p "$tempdir"
+        
+        # Generate STAR index
+        STAR --runMode genomeGenerate \
+             --genomeDir "$tempdir" \
+             --genomeFastaFiles {WORKDIR}/{input.genome} \
+             --sjdbGTFfile {input.gff} \
+             --sjdbOverhang {params.overhang} \
+             --runThreadN {threads} \
+             2> {log}
+        
+        # Move results to final location
+        mv "$tempdir" {WORKDIR}/{output.dir}) 2>> {log}
+        """

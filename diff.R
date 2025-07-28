@@ -1,78 +1,264 @@
-#!/usr/bin/env Rscript                                                                                                                                                                                                                                                                                                                                                                        
-suppressPackageStartupMessages(library("optparse"))
+#!/usr/bin/env Rscript
+# ===========================================================================
+# diff.R
+# ===========================================================================
+#
+# Description:
+#   Performs differential expression analysis on RNA-seq count data using
+#   limma-voom. Compares all possible pairs of conditions and generates
+#   up/down-regulated gene lists.
+#
+# Usage:
+#   Rscript diff.R --countFile counts.txt [options]
+#
+# Required Arguments:
+#   -c, --countFile    Count matrix file (e.g., from featureCounts)
+#                      Format: tab-delimited with header, genes in rows,
+#                      samples in columns. Sample names should be formatted
+#                      as "condition_replicate"
+#
+# Optional Arguments:
+#   -p, --pValue       P-value threshold (default: 0.1)
+#   -l, --logFC        Log fold change threshold (default: 0)
+#   -n, --numberBack   Number of top genes to return (default: 1000)
+#
+# Output:
+#   Creates files named "{condition1}-{condition2}.UP/DOWN" containing
+#   differentially expressed genes for each comparison.
+#
+# Dependencies:
+#   R packages: optparse, edgeR, limma, stringr, statmod
+#
+# Author: htafer
+# Last Updated: 2025-07-28
+# ===========================================================================
 
-option_list <- list(
-    make_option(c("-c","--countFile"),
-                help="Count file as generated for example by featureCounts."
-                ),
-    make_option(c("-p","--pValue"),
-                help="Pvalue threshold for a gene to be reported as differentially expressed",
-                default=0.1
-                ),
-    make_option(c("-l","--logFC"),
-                help="Absolute Value of the log Fold change",
-                default=0
-                ),
-    make_option(c("-n","--numberBack"),
-                help="Number of differentially expressed genes to return",
-                default=1000)
-)
-opt<- parse_args(OptionParser(option_list=option_list))
-
-#define contrast matrix                                                                                                                                                                                                                                                                                                                                                                       
-getContrastDesign<-function(classes){
-    list<-combn(classes,2,simplify=F);
-    contrast<-vector();
-    for(i in 1:length(list)){
-        str=paste(list[[i]][1],list[[i]][2],sep="-");
-        contrast<-c(contrast,str);
-        str=paste(list[[i]][2],list[[i]][1],sep="-");
-        contrast<-c(contrast,str);
+# Load required packages with error handling
+required_packages <- c("optparse", "edgeR", "limma", "stringr", "statmod")
+for (pkg in required_packages) {
+    if (!requireNamespace(pkg, quietly = TRUE)) {
+        stop(paste("Package", pkg, "is required but not installed."))
     }
-    return(contrast);
 }
 
+suppressPackageStartupMessages({
+    library(optparse)
+    library(edgeR)
+    library(limma)
+    library(stringr)
+    library(statmod)
+})
 
-library(edgeR)
-library(limma)
-library(stringr)
-library(statmod)
-#read data                                                                                                                                                                                                                                                                                                                                                                                    
-datafile=read.table(opt$countFile,header=T,row.names=1)
-#get name of categories                                                                                                                                                                                                                                                                                                                                                                       
-groupName=str_replace(colnames(datafile),"_.+","" )
-classes<-unique(groupName)
-#Do what do below but by comparing i,j                                                                                                                                                                                                                                                                                                                                                        
-lC=length(classes)
-lC_1<-lC-1
+# Command line argument parsing
+option_list <- list(
+    make_option(
+        c("-c", "--countFile"),
+        help = "Count file as generated by featureCounts. Required.",
+        type = "character"
+    ),
+    make_option(
+        c("-p", "--pValue"),
+        help = "P-value threshold for differential expression (default: 0.1)",
+        default = 0.1,
+        type = "double"
+    ),
+    make_option(
+        c("-l", "--logFC"),
+        help = "Absolute value threshold for log fold change (default: 0)",
+        default = 0,
+        type = "double"
+    ),
+    make_option(
+        c("-n", "--numberBack"),
+        help = "Number of top differentially expressed genes to return (default: 1000)",
+        default = 1000,
+        type = "integer"
+    )
+)
 
-for(a in 1:lC_1){
-    c=a+1;
-    for(b in c:lC){
-        class<-c(classes[a],classes[b]);
-        columnsa<-grep(paste(classes[a],"_",sep=""),colnames(datafile))
-        columnsb<-grep(paste(classes[b],"_",sep=""),colnames(datafile))
-        columns<-c(columnsa,columnsb)
-        gName<-groupName[columns]
-        all<-DGEList(data.matrix(datafile[,columns]),group=gName)
-        isexpr<-rowSums(cpm(all)>1)>=length(gName)
-        all<-all[isexpr,,keep.lib.sizes=FALSE]
-        all<-calcNormFactors(all)
-        design<-model.matrix(~ 0+factor(match(gName,class)))
-        colnames(design)<-unique(gName)
-        v<-voom(all,design,plot=F)
+# Parse command line arguments with validation
+opt <- parse_args(OptionParser(option_list = option_list))
+
+# Validate required arguments
+if (is.null(opt$countFile)) {
+    stop("Error: --countFile argument is required")
+}
+
+# Validate file existence
+if (!file.exists(opt$countFile)) {
+    stop(paste("Error: Count file", opt$countFile, "does not exist"))
+}
+
+# Validate numeric parameters
+if (opt$pValue <= 0 || opt$pValue > 1) {
+    stop("Error: P-value must be between 0 and 1")
+}
+if (opt$numberBack <= 0) {
+    stop("Error: numberBack must be positive")
+}
+
+# Helper Functions
+# ===========================================================================
+
+#' Generate contrast design matrix for all pairwise comparisons
+#'
+#' @param classes Vector of condition names
+#' @return Vector of contrast strings in format "condition1-condition2"
+getContrastDesign <- function(classes) {
+    # Get all pairwise combinations
+    combinations <- combn(classes, 2, simplify = FALSE)
+    
+    # Create contrasts in both directions
+    contrasts <- vector()
+    for (pair in combinations) {
+        contrasts <- c(
+            contrasts,
+            paste(pair[1], pair[2], sep = "-"),
+            paste(pair[2], pair[1], sep = "-")
+        )
+    }
+    return(contrasts)
+}
+
+#' Load and validate count data
+#'
+#' @param file_path Path to count data file
+#' @return List containing count data and group information
+loadCountData <- function(file_path) {
+    # Read count data
+    tryCatch({
+        data <- read.table(file_path, header = TRUE, row.names = 1)
+    }, error = function(e) {
+        stop(paste("Error reading count file:", e$message))
+    })
+    
+    # Extract condition names from column headers
+    group_names <- str_replace(colnames(data), "_.+", "")
+    classes <- unique(group_names)
+    
+    if (length(classes) < 2) {
+        stop("Error: At least two different conditions are required for comparison")
+    }
+    
+    return(list(
+        data = data,
+        group_names = group_names,
+        classes = classes
+    ))
+}
+
+# Main Analysis
+# ===========================================================================
+
+# Load count data
+count_data <- loadCountData(opt$countFile)
+classes <- count_data$classes
+
+# Initialize counters for comparisons
+n_classes <- length(classes)
+n_classes_minus_1 <- n_classes - 1
+
+# Perform pairwise differential expression analysis
+for (i in 1:n_classes_minus_1) {
+    for (j in (i + 1):n_classes) {
+        # Define conditions to compare
+        conditions <- c(classes[i], classes[j])
+        message(sprintf("Analyzing %s vs %s...", conditions[1], conditions[2]))
+        
+        # Get relevant columns for these conditions
+        cols_1 <- grep(paste0(conditions[1], "_"), colnames(count_data$data))
+        cols_2 <- grep(paste0(conditions[2], "_"), colnames(count_data$data))
+        
+        if (length(cols_1) == 0 || length(cols_2) == 0) {
+            warning(sprintf("Skipping %s vs %s: missing samples", conditions[1], conditions[2]))
+            next
+        }
+        
+        # Prepare data for analysis
+        cols_use <- c(cols_1, cols_2)
+        group_names <- count_data$group_names[cols_use]
+        
+        # Create DGEList object
+        dge <- DGEList(
+            counts = data.matrix(count_data$data[, cols_use]),
+            group = group_names
+        )
+        
+        # Filter lowly expressed genes
+        keep <- rowSums(cpm(dge) > 1) >= length(group_names)
+        dge <- dge[keep, , keep.lib.sizes = FALSE]
+        
+        # Normalize
+        dge <- calcNormFactors(dge)
+        
+        # Create design matrix
+        design <- model.matrix(~ 0 + factor(match(group_names, conditions)))
+        colnames(design) <- conditions
+        
+        # Perform voom transformation
+        v <- voom(dge, design, plot = FALSE)
+        
+        # Fit linear model
         fit <- lmFit(v, design)
-        #Contrast Design                                                                                                                                                                                                                                                                                                                                                                      
-        contrasts<-getContrastDesign(class)
-        contrast.matrix<-makeContrasts(contrasts=contrasts,levels=design)
-        #Fit + predictions                                                                                                                                                                                                                                                                                                                                                                    
-        fit2<-contrasts.fit(fit,contrast.matrix)
-        fit2<-eBayes(fit2)
-        #Now extract results                                                                                                                                                                                                                                                                                                                                                                  
-        for( i in contrasts){
-            fra<-topTable(fit2,coef=i,number=Inf,adjust.method="fdr",lfc=opt$logFC,p.value=opt$pValue,sort.by="P")
-            write.table(head(fra[fra$logFC <=  opt$logFC   & fra$adj.P.Val < opt$pValue,],n=opt$numberBack),file=paste(i,"DOWN",sep="."),qmethod="double")
-            write.table(head(fra[fra$logFC >=  opt$logFC   & fra$adj.P.Val < opt$pValue,],n=opt$numberBack),file=paste(i,"UP",sep=".")  ,qmethod="double")
+        
+        # Create and apply contrasts
+        contrasts <- getContrastDesign(conditions)
+        contrast.matrix <- makeContrasts(
+            contrasts = contrasts,
+            levels = design
+        )
+        
+        # Fit contrasts and compute statistics
+        fit2 <- contrasts.fit(fit, contrast.matrix)
+        fit2 <- eBayes(fit2)
+        
+        # Extract and save results for each contrast
+        for (contrast in contrasts) {
+            # Get all results
+            results <- topTable(
+                fit2,
+                coef = contrast,
+                number = Inf,
+                adjust.method = "fdr",
+                lfc = opt$logFC,
+                p.value = opt$pValue,
+                sort.by = "P"
+            )
+            
+            # Save downregulated genes
+            down_genes <- results[results$logFC <= -abs(opt$logFC) & 
+                                results$adj.P.Val < opt$pValue, ]
+            if (nrow(down_genes) > 0) {
+                write.table(
+                    head(down_genes, n = opt$numberBack),
+                    file = paste0(contrast, ".DOWN"),
+                    quote = TRUE,
+                    row.names = TRUE,
+                    col.names = TRUE,
+                    sep = "\t"
+                )
+            }
+            
+            # Save upregulated genes
+            up_genes <- results[results$logFC >= abs(opt$logFC) & 
+                              results$adj.P.Val < opt$pValue, ]
+            if (nrow(up_genes) > 0) {
+                write.table(
+                    head(up_genes, n = opt$numberBack),
+                    file = paste0(contrast, ".UP"),
+                    quote = TRUE,
+                    row.names = TRUE,
+                    col.names = TRUE,
+                    sep = "\t"
+                )
+            }
+            
+            message(sprintf(
+                "Found %d up-regulated and %d down-regulated genes in %s",
+                nrow(up_genes),
+                nrow(down_genes),
+                contrast
+            ))
         }
     }
 }
